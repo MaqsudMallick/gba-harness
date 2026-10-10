@@ -8,15 +8,16 @@ in this file.
 
 - [ ] Refresh the expired Entire login with `entire login --device`.
 - [ ] Confirm the GitHub repository has been imported into Entire and is visible to the team.
-- [ ] Confirm this branch's pushed commit has an Entire checkpoint with captured session
-      context. Inspect it with `entire checkpoint list` and `entire checkpoint explain HEAD`.
-- [ ] Open `repository -> branch -> commit -> checkpoint` in Entire and copy the accessible
-      checkpoint URL and checkpoint ID into `hackathon.md`.
+- [x] Attached the Codex session to commit `c47ae93c9583137756b38c9a89c1b5cba36f04c7`
+      and verified checkpoint `01M4K4DYFVKB5TF5R77KZMJD5J` locally with
+      `entire checkpoint list` and `entire checkpoint explain HEAD`.
+- [ ] Open the checkpoint in Entire after login and confirm reviewers can access it:
+      <https://entire.io/gh/MaqsudMallick/gba-harness/commit/c47ae93c9583137756b38c9a89c1b5cba36f04c7>.
 
-Expected GitHub-backed checkpoint URL format:
+Recorded GitHub-backed checkpoint URL:
 
 ```text
-https://entire.io/gh/MaqsudMallick/gba-harness/commit/FULL_COMMIT_SHA
+https://entire.io/gh/MaqsudMallick/gba-harness/commit/c47ae93c9583137756b38c9a89c1b5cba36f04c7
 ```
 
 ## Neatlogs evidence

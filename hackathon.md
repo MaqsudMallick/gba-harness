@@ -45,6 +45,11 @@ portable across games and multiplayer formats.
 - Completed: authenticated Entire, enabled the repository, installed Git/Codex/Claude
   hooks, and verified the installation with `entire doctor`. Codex reports that its seven
   repository hooks still require explicit approval through `/hooks`.
+- Completed: recovered the missed Codex hook capture with Entire's supported session-attach
+  flow. Checkpoint `01M4K4DYFVKB5TF5R77KZMJD5J` is attached to commit
+  `c47ae93c9583137756b38c9a89c1b5cba36f04c7` and is locally verified by both
+  `entire checkpoint list` and `entire checkpoint explain HEAD`. Expected web URL:
+  <https://entire.io/gh/MaqsudMallick/gba-harness/commit/c47ae93c9583137756b38c9a89c1b5cba36f04c7>.
 - Completed: installed neatlogs 1.4.26 with its Vertex AI integration and ran the
   network-free Doctor v2 check. It passed with four spans, zero dropped spans, and a valid
   local envelope.
@@ -74,7 +79,8 @@ portable across games and multiplayer formats.
 - Completed post-fix verification: `ruff` passed, strict `mypy` passed for all 23 source
   files, and all 303 tests passed. A focused regression test checks the 320-token budget and
   a new observability test checks stable trace-ID capture.
-- Pending external verification: first Entire checkpoint and a shareable checkpoint URL/ID.
+- Pending external verification: refresh the expired Entire web login, confirm the repository
+  import has synced, and verify the recorded checkpoint URL is accessible to reviewers.
 - Pending external verification: open the recorded application traces in the dashboard and
   save sanitized shareable links or screenshots. The local API key can ingest and Doctor can
   verify its own probe, but public trace readback requires a separate read token/project ID.
@@ -121,6 +127,7 @@ Confirmed from the published hackathon page on 2026-10-10:
 Outstanding:
 
 - Shareable neatlogs trace links or sanitized screenshots.
-- Accessible Entire checkpoint link and ID.
+- Verify reviewer access to Entire checkpoint `01M4K4DYFVKB5TF5R77KZMJD5J` at the recorded
+  commit URL.
 - cfo.ai business plan.
 - Public repository, demo video, and public build posts.
