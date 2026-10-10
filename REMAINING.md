@@ -1,0 +1,68 @@
+# neatHack remaining actions
+
+This checklist contains only work that still requires an account owner, browser session, or
+submission asset. Code, secrets, private account data, and payment information do not belong
+in this file.
+
+## Entire checkpoint
+
+- [ ] Refresh the expired Entire login with `entire login --device`.
+- [ ] Confirm the GitHub repository has been imported into Entire and is visible to the team.
+- [ ] Confirm this branch's pushed commit has an Entire checkpoint with captured session
+      context. Inspect it with `entire checkpoint list` and `entire checkpoint explain HEAD`.
+- [ ] Open `repository -> branch -> commit -> checkpoint` in Entire and copy the accessible
+      checkpoint URL and checkpoint ID into `hackathon.md`.
+
+Expected GitHub-backed checkpoint URL format:
+
+```text
+https://entire.io/gh/MaqsudMallick/gba-harness/commit/FULL_COMMIT_SHA
+```
+
+## Neatlogs evidence
+
+- [ ] In the Neatlogs dashboard, open the application traces recorded in `hackathon.md`.
+- [ ] Save sanitized shareable trace links or screenshots for the before/failure-recovery and
+      after/fix runs. Do not publish API keys, account details, raw ROM data, or private inputs.
+- [ ] Confirm the hackathon plan entitlement is active for the project.
+
+The instrumented runner now prints `neatlogs_trace_id` after every run, including failures,
+so future traces can be located without guessing.
+
+## cfo.ai business plan
+
+- [ ] Sign up through <https://cfo.ai/neathacks> using the team leader's account.
+- [ ] Complete the card-required signup, then immediately cancel in **Settings -> Billing** as
+      instructed by the organisers.
+- [ ] Ask the organisers to confirm the neatHack credits have been applied.
+- [ ] Use `cfo-ai-brief.md` as the input and build conservative, base, and growth scenarios
+      covering pricing, costs, revenue, gross margin, burn, runway, and break-even.
+- [ ] Replace assumptions with measured trace/model costs where available.
+- [ ] Export or share the resulting cfo.ai business plan and add its link or sanitized artifact
+      to `hackathon.md` and the final submission.
+
+## Crustdata credits
+
+- [ ] Open <https://app.crustdata.com> and select **Have a promo code?** before signup.
+- [ ] Apply promo code `NEATLOGS-OCT2026`.
+- [ ] Sign up with email, not **Continue with Google**, so the promo code is retained.
+- [ ] Confirm the account received 5,000 credits. Contact the organisers in Discord if the
+      account already exists or the credits do not appear.
+
+## Community and submission
+
+- [ ] Join the neatHack Discord through <https://neatlogs.com/discord> and monitor it for the
+      final submission cutoff and organiser announcements.
+- [ ] Ensure the repository is public and the pushed hackathon commits are visible to judges.
+- [ ] Record a demo video of three minutes or less covering architecture, implementation,
+      runtime, reasoning, and results for neatlogs, Entire, and cfo.ai.
+- [ ] Include the public repository, demo, Neatlogs evidence, Entire checkpoint URL and ID,
+      cfo.ai business plan, and public `#neatHack` build links in the submission.
+- [ ] Submit during the announced window by quoting the official neatlogs submission post;
+      confirm the final cutoff in Discord before publishing.
+
+## Optional Entire features
+
+- [ ] If useful, request Trails access and configure its runners only after access is granted.
+- [ ] If useful, evaluate Entire Graph/Brain after the required checkpoint is accessible.
+

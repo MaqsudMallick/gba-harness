@@ -95,7 +95,9 @@ class VertexDecisionProvider:
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_INSTRUCTION,
                 temperature=0.1,
-                max_output_tokens=160,
+                # The required schema has six fields. A 160-token ceiling occasionally
+                # truncated otherwise-valid JSON before the final string closed.
+                max_output_tokens=320,
                 response_mime_type="application/json",
                 response_json_schema=schema,
             ),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import threading
 from pathlib import Path
 
@@ -61,48 +62,57 @@ def main(argv: list[str] | None = None) -> int:
     )
     latch = FrameLatch()
 
-    with (
-        NeatlogsSession(neatlogs_key, endpoint=settings.neatlogs_endpoint) as telemetry,
-        LibretroInputPort(
-            rom,
-            core=find_core(settings.libretro_core),
-            frame_sink=latch.sink,
-        ) as port,
-        InputSession(
-            port,
-            Limits(episode_frame_budget=settings.max_episode_frames),
-        ) as session,
-    ):
-        session.submit(ACTIONS["wait"])  # render a stable first observation
-        vertex = VertexDecisionProvider(
-            project=project,
-            location=settings.google_cloud_location,
-            model=settings.vertex_model,
-        )
-        provider = vertex.with_client(
-            telemetry.wrap(
-                vertex.client,
-                game=policy.name,
-                mode="autonomous",
+    telemetry: NeatlogsSession | None = None
+    try:
+        with (
+            NeatlogsSession(neatlogs_key, endpoint=settings.neatlogs_endpoint) as telemetry,
+            LibretroInputPort(
+                rom,
+                core=find_core(settings.libretro_core),
+                frame_sink=latch.sink,
+            ) as port,
+            InputSession(
+                port,
+                Limits(episode_frame_budget=settings.max_episode_frames),
+            ) as session,
+        ):
+            session.submit(ACTIONS["wait"])  # render a stable first observation
+            vertex = VertexDecisionProvider(
+                project=project,
+                location=settings.google_cloud_location,
+                model=settings.vertex_model,
             )
-        )
-        runner = AgentRunner(
-            session=session,
-            frames=latch,
-            provider=provider,
-            policy=policy,
-            config=RunnerConfig(
-                max_turns=args.max_turns,
-                confidence_threshold=settings.confidence_threshold,
-            ),
-            telemetry=telemetry,
-        )
-        result = runner.run() if args.headless else _run_live(runner, latch, args.scale)
+            provider = vertex.with_client(
+                telemetry.wrap(
+                    vertex.client,
+                    game=policy.name,
+                    mode="autonomous",
+                )
+            )
+            runner = AgentRunner(
+                session=session,
+                frames=latch,
+                provider=provider,
+                policy=policy,
+                config=RunnerConfig(
+                    max_turns=args.max_turns,
+                    confidence_threshold=settings.confidence_threshold,
+                ),
+                telemetry=telemetry,
+            )
+            result = runner.run() if args.headless else _run_live(runner, latch, args.scale)
+    except Exception:
+        if telemetry is not None and telemetry.trace_id is not None:
+            print(f"agent failed: neatlogs_trace_id={telemetry.trace_id}", file=sys.stderr)
+        raise
 
-    print(
+    summary = (
         f"agent finished: status={result.status}, turns={len(result.turns)}, "
         f"frames={result.total_frames}, provider={result.provider}"
     )
+    if telemetry.trace_id is not None:
+        summary += f", neatlogs_trace_id={telemetry.trace_id}"
+    print(summary)
     return 0 if result.status == "completed" else 1
 
 

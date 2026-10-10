@@ -59,9 +59,25 @@ portable across games and multiplayer formats.
 - Completed verification: `ruff` passed, strict `mypy` passed for all 23 source files, and
   all 302 tests passed. The code tests are offline and do not prove a real Vertex decision;
   the separate Doctor probe proves hosted trace ingestion and readback.
+- Revalidated the authenticated Neatlogs hosted probe. Trace
+  `c7f5c274f3d8b34c1bc3fa5eaa754d80` finalized with four spans, valid hierarchy,
+  preserved inputs/outputs and metadata, numeric token fields, and no dropped spans.
+- Used a real traced Vertex episode to reproduce intermittent truncated decision JSON. With
+  the original 160-token output ceiling, trace `9aac73ec297bd530759980c3d0ca4ca6`
+  recorded three completed turns and two bounded error-recovery attempts in a five-turn run.
+- Fixed the failure by raising the structured-decision output ceiling to 320 tokens. Also
+  made the runner print its Neatlogs trace ID on both successful and failed process exits so
+  every application run can be found without guessing in the dashboard.
+- Verified the fix with trace `a467fa9f0aaeb9bd08a00d29fa09e4d8`: all five requested
+  turns produced decisions and actions, with no recovery turn consumed. The short run ended
+  at its configured turn limit; it does not claim level completion.
+- Completed post-fix verification: `ruff` passed, strict `mypy` passed for all 23 source
+  files, and all 303 tests passed. A focused regression test checks the 320-token budget and
+  a new observability test checks stable trace-ID capture.
 - Pending external verification: first Entire checkpoint and a shareable checkpoint URL/ID.
-- Pending external verification: representative traced agent run and a sanitized shareable
-  trace link or screenshot.
+- Pending external verification: open the recorded application traces in the dashboard and
+  save sanitized shareable links or screenshots. The local API key can ingest and Doctor can
+  verify its own probe, but public trace readback requires a separate read token/project ID.
 - Pending external action: build the business plan in cfo.ai, covering pricing, costs,
   revenue, and runway; `cfo-ai-brief.md` contains prepared inputs, but only the resulting
   cfo.ai plan counts as submission evidence.

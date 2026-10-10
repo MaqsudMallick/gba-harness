@@ -63,6 +63,7 @@ def test_vertex_returns_a_normalized_decision() -> None:
     assert decision.input_tokens == 42
     assert decision.output_tokens == 7
     assert models.kwargs["model"] == "gemini-test"
+    assert models.kwargs["config"].max_output_tokens == 320
 
 
 def test_vertex_rejects_an_action_outside_the_policy() -> None:

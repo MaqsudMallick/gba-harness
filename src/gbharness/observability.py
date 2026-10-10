@@ -6,9 +6,10 @@ not need a tracing account, and importing the core package stays side-effect fre
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 import neatlogs  # type: ignore[import-untyped]
 
@@ -44,6 +45,12 @@ class NeatlogsSession:
     workflow_name: str = "visual-game-agent"
     endpoint: str = "https://ingest.neatlogs.com"
     _closed: bool = False
+    _trace_ids: list[str] = field(default_factory=list, init=False, repr=False)
+
+    @property
+    def trace_id(self) -> str | None:
+        """Return the most recently opened trace for shareable run evidence."""
+        return self._trace_ids[-1] if self._trace_ids else None
 
     def start(self) -> NeatlogsSession:
         neatlogs.init(
@@ -58,17 +65,18 @@ class NeatlogsSession:
         """Wrap one supported model client without leaking tracing into its adapter."""
         return neatlogs.wrap(client, **attributes)
 
+    @contextmanager
     def span(
         self, name: str, kind: str, *, capture_input: bool = False, capture_output: bool = False
-    ) -> AbstractContextManager[Any]:
+    ) -> Iterator[Any]:
         del capture_input, capture_output
-        return cast(
-            AbstractContextManager[Any],
-            neatlogs.trace(
-                name,
-                kind=kind,
-            ),
-        )
+        with neatlogs.trace(name, kind=kind) as span:
+            context = span.get_span_context()
+            if context.is_valid:
+                trace_id = f"{context.trace_id:032x}"
+                if trace_id not in self._trace_ids:
+                    self._trace_ids.append(trace_id)
+            yield span
 
     def log(self, template: str, **values: object) -> None:
         neatlogs.log(template, **values)

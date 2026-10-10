@@ -152,6 +152,8 @@ The Pygame window says **AGENT CONTROL**, disables keyboard gameplay input, and 
 latest action, confidence, scene, and progress estimate. Use `--headless` for evaluation
 runs. Each run is grouped in neatlogs as `visual-game-agent`, including the Vertex call,
 agent decision, controller action, state changes, errors, and recovery attempts.
+The final console summary includes `neatlogs_trace_id`, including on failed runs, so the
+exact dashboard trace can be attached to a bug report or hackathon submission.
 
 The Mario action table in `src/gbharness/agent/policy.py` is only a starter adapter. Add a
 new `GamePolicy` for another game; no provider or emulator changes are required.
