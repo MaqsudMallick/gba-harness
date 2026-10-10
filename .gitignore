@@ -23,3 +23,6 @@ vendor/
 .env
 .env.*
 !.env.example
+PLAN-*.md
+repomix-*.xml
+.idea/*
