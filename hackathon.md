@@ -48,16 +48,20 @@ portable across games and multiplayer formats.
 - Completed: installed neatlogs 1.4.26 with its Vertex AI integration and ran the
   network-free Doctor v2 check. It passed with four spans, zero dropped spans, and a valid
   local envelope.
+- Completed: ran the authenticated Neatlogs Doctor v2 hosted probe against the required US
+  ingest endpoint. Trace `7dc923559d27cee58ecd0e0fdab5e77c` finalized successfully; all
+  four spans were visible with valid hierarchy, attributes, input/output, SDK metadata, and
+  numeric token fields. This proves the synthetic telemetry path, not the application run.
 - Completed: implemented a provider-neutral decision contract, Vertex AI structured-output
   adapter, game-policy boundary, long-horizon runner, low-confidence fallback, decision
   error recovery, terminal-state confirmation, neatlogs workflow/agent/tool spans, and a
   live **AGENT CONTROL** viewer.
-- Completed verification: `ruff` passed, strict `mypy` passed for all 22 source files, and
-  all 302 tests passed. These are offline tests; they do not prove a hosted trace or real
-  Vertex model decision.
+- Completed verification: `ruff` passed, strict `mypy` passed for all 23 source files, and
+  all 302 tests passed. The code tests are offline and do not prove a real Vertex decision;
+  the separate Doctor probe proves hosted trace ingestion and readback.
 - Pending external verification: first Entire checkpoint and a shareable checkpoint URL/ID.
-- Pending external verification: neatlogs project key, hosted Doctor probe, representative
-  traced agent run, and sanitized shareable trace evidence.
+- Pending external verification: representative traced agent run and a sanitized shareable
+  trace link or screenshot.
 - Pending external action: build the business plan in cfo.ai, covering pricing, costs,
   revenue, and runway; add a shareable result to the submission evidence.
 
@@ -74,10 +78,11 @@ ROMs and credentials are local-only and must not be committed or shared.
 
 ## Known limitations and next steps
 
-- The autonomous observe-decide-act loop is not connected yet.
-- The current action vocabulary is Mario-specific and needs a game adapter boundary.
-- No real Vertex AI decision or neatlogs trace has been verified because credentials are
-  not configured in this checkout.
+- The autonomous loop and live viewer are implemented but have not yet been exercised with
+  a real Vertex decision.
+- The reusable game-policy boundary exists, but only the Mario starter policy is implemented.
+- No representative application trace has been verified yet. Per the supplied Neatlogs
+  instructions, the builder must run the instrumented entry point and provide its trace ID.
 - Agent-vs-human and agent-vs-agent match orchestration are planned, not implemented.
 - Ranked matches need a policy for save states; emulator rollback should normally be
   disabled because it gives agents an unfair advantage.

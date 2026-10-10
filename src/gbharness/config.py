@@ -36,6 +36,7 @@ DEFAULT_CONFIDENCE_THRESHOLD: Final = 0.70
 DEFAULT_AGENT_PROVIDER: Final = "vertex"
 DEFAULT_VERTEX_MODEL: Final = "gemini-2.5-flash"
 DEFAULT_VERTEX_LOCATION: Final = "global"
+DEFAULT_NEATLOGS_ENDPOINT: Final = "https://ingest.neatlogs.com"
 
 
 class MissingSecret(RuntimeError):
@@ -61,6 +62,7 @@ class Settings:
     """
 
     neatlogs_api_key: str | None = field(repr=False, default=None)
+    neatlogs_endpoint: str = DEFAULT_NEATLOGS_ENDPOINT
     openai_api_key: str | None = field(repr=False, default=None)
     agent_provider: str = DEFAULT_AGENT_PROVIDER
     vertex_model: str = DEFAULT_VERTEX_MODEL
@@ -81,6 +83,7 @@ class Settings:
         neatlogs_key = "set" if self.neatlogs_api_key else "unset"
         return (
             f"Settings(neatlogs_api_key=<{neatlogs_key}>, "
+            f"neatlogs_endpoint={self.neatlogs_endpoint!r}, "
             f"openai_api_key=<{openai_key}>, agent_provider={self.agent_provider!r}, "
             f"vertex_model={self.vertex_model!r}, "
             f"google_cloud_project={self.google_cloud_project!r}, "
@@ -181,6 +184,7 @@ def load_settings(*, dotenv_path: str | Path | None = None, override: bool = Fal
         load_dotenv(found, override=override)
     return Settings(
         neatlogs_api_key=os.environ.get("NEATLOGS_API_KEY") or None,
+        neatlogs_endpoint=os.environ.get("NEATLOGS_ENDPOINT") or DEFAULT_NEATLOGS_ENDPOINT,
         openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
         agent_provider=os.environ.get("GBHARNESS_AGENT_PROVIDER") or DEFAULT_AGENT_PROVIDER,
         vertex_model=os.environ.get("GBHARNESS_VERTEX_MODEL") or DEFAULT_VERTEX_MODEL,

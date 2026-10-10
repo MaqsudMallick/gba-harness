@@ -11,6 +11,7 @@ from gbharness.config import (
     DEFAULT_CONFIDENCE_THRESHOLD,
     DEFAULT_DECISION_MODEL,
     DEFAULT_ESCALATION_MODEL,
+    DEFAULT_NEATLOGS_ENDPOINT,
     DEFAULT_VERTEX_LOCATION,
     DEFAULT_VERTEX_MODEL,
     MissingSecret,
@@ -20,6 +21,7 @@ from gbharness.config import (
 
 ENV_VARS = (
     "NEATLOGS_API_KEY",
+    "NEATLOGS_ENDPOINT",
     "OPENAI_API_KEY",
     "GBHARNESS_AGENT_PROVIDER",
     "GBHARNESS_VERTEX_MODEL",
@@ -48,6 +50,7 @@ def test_defaults_when_nothing_is_set(clean_env):
     settings = load_settings()
     assert settings.openai_api_key is None
     assert settings.neatlogs_api_key is None
+    assert settings.neatlogs_endpoint == DEFAULT_NEATLOGS_ENDPOINT
     assert settings.agent_provider == DEFAULT_AGENT_PROVIDER
     assert settings.vertex_model == DEFAULT_VERTEX_MODEL
     assert settings.google_cloud_location == DEFAULT_VERTEX_LOCATION

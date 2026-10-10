@@ -11,7 +11,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from gbharness.agent.policy import QUESTIONS
+from gbharness.agent.openai_questions import QUESTIONS
 
 #: Decisions bills input tokens only -- no output, no cache charges.
 USD_PER_INPUT_TOKEN = 0.10 / 1_000_000

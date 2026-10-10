@@ -42,11 +42,13 @@ class NeatlogsSession:
 
     api_key: str
     workflow_name: str = "visual-game-agent"
+    endpoint: str = "https://ingest.neatlogs.com"
     _closed: bool = False
 
     def start(self) -> NeatlogsSession:
         neatlogs.init(
             api_key=self.api_key,
+            endpoint=self.endpoint,
             workflow_name=self.workflow_name,
             capture_logs=True,
         )

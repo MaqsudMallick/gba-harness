@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     latch = FrameLatch()
 
     with (
-        NeatlogsSession(neatlogs_key) as telemetry,
+        NeatlogsSession(neatlogs_key, endpoint=settings.neatlogs_endpoint) as telemetry,
         LibretroInputPort(
             rom,
             core=find_core(settings.libretro_core),

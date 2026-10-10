@@ -8,7 +8,8 @@ from gbharness.agent.contracts import (
     GamePolicy,
 )
 from gbharness.agent.decide import Decider, Verdict
-from gbharness.agent.policy import ACTION_DESCRIPTIONS, ACTIONS, QUESTIONS, resolve
+from gbharness.agent.openai_questions import QUESTIONS
+from gbharness.agent.policy import ACTION_DESCRIPTIONS, ACTIONS, resolve
 from gbharness.agent.runner import AgentRunner, EpisodeResult, RunnerConfig, TurnRecord
 from gbharness.agent.vertex import VertexDecisionProvider
 
