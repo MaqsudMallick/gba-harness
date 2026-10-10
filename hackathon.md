@@ -63,7 +63,8 @@ portable across games and multiplayer formats.
 - Pending external verification: representative traced agent run and a sanitized shareable
   trace link or screenshot.
 - Pending external action: build the business plan in cfo.ai, covering pricing, costs,
-  revenue, and runway; add a shareable result to the submission evidence.
+  revenue, and runway; `cfo-ai-brief.md` contains prepared inputs, but only the resulting
+  cfo.ai plan counts as submission evidence.
 
 ## Demo
 
