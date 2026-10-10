@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# ROMs are not ours to commit
+roms/*
+!roms/.gitkeep
+
+# transcripts and save states from local runs
+*.jsonl
+*.state
+
+# locally fetched emulator core (see scripts/fetch-core.sh)
+vendor/
+
+# secrets — never commit; .env.example is the committed template
+.env
+.env.*
+!.env.example

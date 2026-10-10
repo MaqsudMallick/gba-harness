@@ -1,0 +1,432 @@
+"""`InputPort` backed by the mGBA libretro core, driven over ctypes.
+
+Why this and not an in-process Python emulator: there isn't one for the GBA. PyBoy is
+DMG/CGB only and cannot load a GBA ROM at all. The PyPI `mgba` bindings ship cp310/cp311
+wheels with no sdist, and even on a supported interpreter they fail at import because the
+wheel does not bundle the `libmgba.so.0.10` they link against. Building mGBA's bindings
+from source needs cmake and pins them to one interpreter.
+
+libretro sidesteps all of it. The ABI is frozen, `ctypes` needs no build step and no
+particular Python version, and the input model is a *better* fit than PyBoy's: libretro
+**pulls** the held set once per frame through a callback, so `pressed()` is literally what
+the game reads. There is no push-an-edge-then-tick asymmetry to get wrong.
+
+Everything non-obvious below was verified against mGBA 0.10.5's core, not inferred:
+
+* ``retro_run()`` advances **exactly one frame** -- 10 calls produced 10 `video_refresh`
+  and 10 `input_poll` callbacks.
+* The core polls **exactly the ten GBA buttons** and never asks for X or Y.
+* A synthesized GBA ROM boots: the HLE BIOS skips the Nintendo logo check that real
+  hardware enforces, so no copyrighted data is needed to run tests.
+* ``retro_serialize`` / ``retro_unserialize`` work (528,448 bytes), which is what backs
+  `Snapshotting`.
+* ``RETRO_MEMORY_SYSTEM_RAM`` is **not exposed** (size 0, NULL pointer), so there is no
+  reading KEYINPUT back as an independent oracle. With libretro we *are* the input
+  hardware; the thing worth asserting is that the core polled us and got the right bits.
+* Framebuffer is 240x160 -- the GBA's resolution, not the Game Boy's 160x144.
+* **The core cannot be trusted with a malformed ROM.** `retro_load_game` rejects a short
+  buffer cleanly, but calling `retro_deinit` afterwards corrupts the process heap
+  ("corrupted size vs. prev_size"), and the crash lands later in an unrelated call. So
+  this module validates the header itself before the core ever sees the bytes, and never
+  deinitializes after a failed load.
+
+Rendering and audio callbacks are no-ops. The screen belongs to an observation layer that
+does not exist yet; ignoring it here is also a large speed win.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import os
+from collections.abc import Callable
+from pathlib import Path
+from typing import Final
+
+from gbharness.buttons import Button
+from gbharness.port import EmulationEnded
+
+# --- libretro ABI constants (libretro.h) ------------------------------------------
+RETRO_API_VERSION: Final = 1
+
+ENV_GET_CAN_DUPE: Final = 3
+ENV_GET_SYSTEM_DIRECTORY: Final = 9
+ENV_SET_PIXEL_FORMAT: Final = 10
+ENV_GET_SAVE_DIRECTORY: Final = 31
+
+RETRO_DEVICE_JOYPAD: Final = 1
+RETRO_MEMORY_SAVE_RAM: Final = 0
+
+#: GBA button -> libretro joypad id. Note A and B are 8 and 0, not 0 and 1: libretro's
+#: numbering follows the SNES pad, so taking them in order would swap them.
+JOYPAD_ID: Final[dict[Button, int]] = {
+    Button.B: 0,
+    Button.SELECT: 2,
+    Button.START: 3,
+    Button.UP: 4,
+    Button.DOWN: 5,
+    Button.LEFT: 6,
+    Button.RIGHT: 7,
+    Button.A: 8,
+    Button.L: 10,
+    Button.R: 11,
+}
+_BUTTON_BY_ID: Final[dict[int, Button]] = {v: k for k, v in JOYPAD_ID.items()}
+
+SCREEN_WIDTH: Final = 240
+SCREEN_HEIGHT: Final = 160
+
+_CORE_NAMES: Final = ("mgba_libretro.so",)
+
+#: Where `scripts/fetch-core.sh` puts the core, relative to the project root.
+VENDOR_SUBDIR: Final = Path("vendor") / "libretro"
+
+_SYSTEM_CORE_DIRS: Final = (
+    "/usr/lib/x86_64-linux-gnu/libretro",
+    "/usr/lib/libretro",
+    "/usr/local/lib/libretro",
+    os.path.expanduser("~/.config/retroarch/cores"),
+)
+
+
+def _vendor_dirs() -> list[Path]:
+    """Project-local core directories.
+
+    Searched from the working directory upwards, so running from a subdirectory still
+    finds the repo's own core, plus one derived from this file's location to cover an
+    editable install invoked from elsewhere. A contributor who ran `scripts/fetch-core.sh`
+    then needs no environment variable and no root.
+    """
+    roots: list[Path] = [Path.cwd(), *Path.cwd().parents]
+    package_root = Path(__file__).resolve().parents[3]  # src/gbharness/backends -> root
+    if package_root not in roots:
+        roots.append(package_root)
+    return [root / VENDOR_SUBDIR for root in roots]
+
+# ctypes callback signatures. Kept at module scope so the types are created once.
+_ENV_T = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_uint, ctypes.c_void_p)
+_VIDEO_T = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_size_t)
+_AUDIO_T = ctypes.CFUNCTYPE(None, ctypes.c_int16, ctypes.c_int16)
+_AUDIO_BATCH_T = ctypes.CFUNCTYPE(ctypes.c_size_t, ctypes.POINTER(ctypes.c_int16), ctypes.c_size_t)
+_POLL_T = ctypes.CFUNCTYPE(None)
+_STATE_T = ctypes.CFUNCTYPE(
+    ctypes.c_int16, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint
+)
+
+
+#: Whether `retro_init` has been called on the loaded core. Tracked at module scope
+#: because libretro has no context handle and `retro_init` must not run twice.
+_initialized = False
+
+GBA_HEADER_SIZE: Final = 0xC0
+_FIXED_VALUE_OFFSET: Final = 0xB2
+_FIXED_VALUE: Final = 0x96
+
+
+#: Receives the raw framebuffer pointer once per rendered frame: (ptr, width, height,
+#: pitch_in_bytes). Deliberately untyped pixels -- this module does no pixel work, it only
+#: offers the attachment point. Pitch is bytes per row and is wider than `width` (the core
+#: pads rows), so a consumer must stride by pitch, not by width.
+type FrameSink = Callable[[int, int, int, int], None]
+
+
+class CoreNotFound(RuntimeError):
+    """The mGBA libretro core could not be located."""
+
+
+def validate_rom(data: bytes) -> None:
+    """Reject anything that is not plausibly a GBA cartridge image.
+
+    This exists because the core corrupts the heap on the failed-load path (see the module
+    docstring), so a bad ROM must never reach it. Two checks are enough to catch everything
+    that is not a GBA ROM at all:
+
+    * at least a full 192-byte cartridge header, and
+    * the fixed value ``0x96`` at offset 0xB2, which real hardware's BIOS verifies and
+      every cartridge that boots therefore carries.
+
+    Raises:
+        ValueError: with the reason.
+    """
+    if len(data) < GBA_HEADER_SIZE:
+        raise ValueError(
+            f"not a Game Boy Advance ROM: {len(data)} bytes is shorter than the "
+            f"{GBA_HEADER_SIZE}-byte cartridge header"
+        )
+    actual = data[_FIXED_VALUE_OFFSET]
+    if actual != _FIXED_VALUE:
+        raise ValueError(
+            f"not a Game Boy Advance ROM: byte 0x{_FIXED_VALUE_OFFSET:02X} is "
+            f"0x{actual:02X}, expected the fixed value 0x{_FIXED_VALUE:02X}"
+        )
+
+
+class _GameInfo(ctypes.Structure):
+    _fields_ = [
+        ("path", ctypes.c_char_p),
+        ("data", ctypes.c_void_p),
+        ("size", ctypes.c_size_t),
+        ("meta", ctypes.c_char_p),
+    ]
+
+
+def find_core(explicit: str | Path | None = None) -> Path:
+    """Locate `mgba_libretro.so`.
+
+    Search order: the `explicit` argument, then ``$GBHARNESS_LIBRETRO_CORE``, then the
+    project's own ``vendor/libretro/`` (see `_vendor_dirs`), then the system core
+    directories. Project-local wins over system so a core pinned in the repo is the one
+    actually used.
+
+    This is the only core-discovery path in the package. It used to be duplicated in the
+    test fixtures, which is precisely how ``vendor/`` came to work under pytest and not
+    for ``examples/demo.py``.
+
+    Raises:
+        CoreNotFound: naming the three ways to get a core.
+    """
+    candidates: list[Path] = []
+    if explicit is not None:
+        candidates.append(Path(explicit))
+    env = os.environ.get("GBHARNESS_LIBRETRO_CORE")
+    if env:
+        candidates.append(Path(env))
+    search_dirs = [*_vendor_dirs(), *(Path(d) for d in _SYSTEM_CORE_DIRS)]
+    candidates.extend(d / name for d in search_dirs for name in _CORE_NAMES)
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise CoreNotFound(
+        "could not find mgba_libretro.so. Get one with any of:\n"
+        "  ./scripts/fetch-core.sh            (downloads into vendor/, no root needed)\n"
+        "  sudo apt install libretro-mgba     (Debian/Ubuntu, system-wide)\n"
+        "  export GBHARNESS_LIBRETRO_CORE=... (point at an existing core)"
+    )
+
+
+class LibretroInputPort:
+    """Drive a Game Boy Advance through the mGBA libretro core.
+
+    **One instance per process.** libretro's C API has no context handle -- a core keeps
+    its state in globals -- so two ports would silently share one emulator. Constructing
+    a second while one is open raises rather than corrupting both.
+    """
+
+    _instance: LibretroInputPort | None = None
+
+    def __init__(
+        self,
+        rom: str | Path | bytes,
+        *,
+        core: str | Path | None = None,
+        system_dir: str | Path | None = None,
+        frame_sink: FrameSink | None = None,
+    ) -> None:
+        if LibretroInputPort._instance is not None:
+            raise RuntimeError(
+                "a LibretroInputPort is already open in this process; libretro cores keep "
+                "state in globals, so only one may exist at a time. Close the other first."
+            )
+        self._core_path = find_core(core)
+        self._frame_sink = frame_sink
+        self._lib = ctypes.CDLL(str(self._core_path))
+        self._held: set[Button] = set()
+        self._closed = False
+        self._loaded = False
+        self.frames_run = 0
+        self.polls = 0
+        self.queried_ids: set[int] = set()
+
+        self._system_dir = ctypes.c_char_p(str(system_dir or Path.cwd()).encode())
+        self._declare()
+        self._install_callbacks()
+
+        version = self._lib.retro_api_version()
+        if version != RETRO_API_VERSION:
+            raise RuntimeError(
+                f"{self._core_path.name} reports libretro API version {version}, "
+                f"expected {RETRO_API_VERSION}"
+            )
+        global _initialized
+        if not _initialized:
+            self._lib.retro_init()
+            _initialized = True
+        # No retro_deinit() if the load fails: doing so corrupts the heap. The core stays
+        # initialized and ready for another load attempt instead.
+        self._load(rom)
+        LibretroInputPort._instance = self
+
+    # --- construction helpers -------------------------------------------------------
+
+    def _declare(self) -> None:
+        lib = self._lib
+        lib.retro_api_version.restype = ctypes.c_uint
+        lib.retro_load_game.restype = ctypes.c_bool
+        lib.retro_load_game.argtypes = [ctypes.POINTER(_GameInfo)]
+        lib.retro_serialize_size.restype = ctypes.c_size_t
+        lib.retro_serialize.restype = ctypes.c_bool
+        lib.retro_serialize.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        lib.retro_unserialize.restype = ctypes.c_bool
+        lib.retro_unserialize.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        lib.retro_get_memory_data.restype = ctypes.c_void_p
+        lib.retro_get_memory_data.argtypes = [ctypes.c_uint]
+        lib.retro_get_memory_size.restype = ctypes.c_size_t
+        lib.retro_get_memory_size.argtypes = [ctypes.c_uint]
+
+    def _install_callbacks(self) -> None:
+        """Wire the six libretro callbacks.
+
+        The closures are stored on the instance deliberately: ctypes does not keep a
+        reference to a callback it has handed to C, so letting them be collected would
+        hand the core dangling function pointers.
+        """
+
+        @_ENV_T
+        def environment(cmd: int, data: int | None) -> bool:
+            if cmd == ENV_SET_PIXEL_FORMAT:
+                return True  # we never look at the framebuffer
+            if data is None:
+                # Every command below writes through `data`. A core that passes NULL for
+                # one of them is misbehaving; decline rather than dereference it.
+                return False
+            if cmd == ENV_GET_CAN_DUPE:
+                ctypes.cast(data, ctypes.POINTER(ctypes.c_bool))[0] = True
+                return True
+            if cmd in (ENV_GET_SYSTEM_DIRECTORY, ENV_GET_SAVE_DIRECTORY):
+                ctypes.cast(data, ctypes.POINTER(ctypes.c_char_p))[0] = self._system_dir
+                return True
+            return False  # unhandled: the core falls back to its defaults
+
+        @_VIDEO_T
+        def video(data: int | None, width: int, height: int, pitch: int) -> None:
+            # No pixel handling here -- the framebuffer belongs to an observation layer
+            # that does not exist yet. This is only the seam it will attach to, so that
+            # layer never has to reach into this one's callbacks.
+            if self._frame_sink is not None and data is not None:
+                self._frame_sink(data, width, height, pitch)
+
+        @_AUDIO_T
+        def audio(left: int, right: int) -> None:
+            pass
+
+        @_AUDIO_BATCH_T
+        def audio_batch(data: object, frames: int) -> int:
+            return frames  # claim we consumed them all
+
+        @_POLL_T
+        def input_poll() -> None:
+            self.polls += 1
+
+        @_STATE_T
+        def input_state(port: int, device: int, index: int, id_: int) -> int:
+            if device != RETRO_DEVICE_JOYPAD or port != 0:
+                return 0
+            self.queried_ids.add(id_)
+            button = _BUTTON_BY_ID.get(id_)
+            return 1 if button is not None and button in self._held else 0
+
+        self._callbacks = (environment, video, audio, audio_batch, input_poll, input_state)
+        self._lib.retro_set_environment(environment)
+        self._lib.retro_set_video_refresh(video)
+        self._lib.retro_set_audio_sample(audio)
+        self._lib.retro_set_audio_sample_batch(audio_batch)
+        self._lib.retro_set_input_poll(input_poll)
+        self._lib.retro_set_input_state(input_state)
+
+    def _load(self, rom: str | Path | bytes) -> None:
+        if isinstance(rom, bytes):
+            data, path = rom, b""
+        else:
+            path_obj = Path(rom)
+            data, path = path_obj.read_bytes(), str(path_obj).encode()
+        validate_rom(data)
+        self._rom_buffer = ctypes.create_string_buffer(data, len(data))
+        info = _GameInfo(
+            path=path or None,
+            data=ctypes.cast(self._rom_buffer, ctypes.c_void_p),
+            size=len(data),
+            meta=None,
+        )
+        if not self._lib.retro_load_game(ctypes.byref(info)):
+            raise RuntimeError("the core refused to load this ROM")
+        self._loaded = True
+
+    # --- InputPort ------------------------------------------------------------------
+
+    def press(self, button: Button) -> None:
+        self._check_open()
+        self._held.add(button)
+
+    def release(self, button: Button) -> None:
+        self._check_open()
+        self._held.discard(button)
+
+    def advance(self, frames: int) -> bool:
+        """Run `frames` frames. Each `retro_run()` is exactly one frame.
+
+        Always returns True while the port is open: unlike a Game Boy cartridge, a
+        libretro core has no "emulation ended" signal -- it runs until unloaded.
+        """
+        if frames < 0:
+            raise ValueError(f"frames must be non-negative, got {frames}")
+        self._check_open()
+        for _ in range(frames):
+            self._lib.retro_run()
+        self.frames_run += frames
+        return True
+
+    def pressed(self) -> frozenset[Button]:
+        return frozenset(self._held)
+
+    # --- Snapshotting ---------------------------------------------------------------
+
+    def snapshot(self) -> bytes:
+        self._check_open()
+        size = self._lib.retro_serialize_size()
+        buffer = ctypes.create_string_buffer(size)
+        if not self._lib.retro_serialize(ctypes.cast(buffer, ctypes.c_void_p), size):
+            raise RuntimeError("retro_serialize failed")
+        return buffer.raw
+
+    def restore(self, state: bytes) -> None:
+        self._check_open()
+        buffer = ctypes.create_string_buffer(state, len(state))
+        if not self._lib.retro_unserialize(ctypes.cast(buffer, ctypes.c_void_p), len(state)):
+            raise RuntimeError("retro_unserialize failed (wrong size or core version?)")
+
+    # --- lifecycle ------------------------------------------------------------------
+
+    @property
+    def core_path(self) -> Path:
+        return self._core_path
+
+    def release_all(self) -> None:
+        """Let every held button up. Safe on a closed port."""
+        if not self._closed:
+            self._held.clear()
+
+    def close(self) -> None:
+        """Release buttons, unload the ROM and deinit the core. Idempotent."""
+        if self._closed:
+            return
+        global _initialized
+        self._held.clear()
+        self._closed = True
+        try:
+            if self._loaded:
+                self._lib.retro_unload_game()
+            if _initialized:
+                self._lib.retro_deinit()
+                _initialized = False
+        finally:
+            if LibretroInputPort._instance is self:
+                LibretroInputPort._instance = None
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise EmulationEnded("port is closed; the core has been deinitialized")
+
+    def __enter__(self) -> LibretroInputPort:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
