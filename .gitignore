@@ -15,6 +15,7 @@ roms/*
 # transcripts and save states from local runs
 *.jsonl
 *.state
+artifacts/
 
 # locally fetched emulator core (see scripts/fetch-core.sh)
 vendor/

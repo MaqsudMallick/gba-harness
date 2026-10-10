@@ -11,7 +11,13 @@ tool-calling designs have to guard against.
 
 from __future__ import annotations
 
-from typing import Any, Final
+from typing import Final
+
+from openai.types.decision_create_params import (
+    Question,
+    QuestionQuestionParamChoice,
+    QuestionQuestionParamPredicate,
+)
 
 from gbharness.actions import Action, hold, tap, wait
 
@@ -34,7 +40,7 @@ ACTIONS: Final[dict[str, Action]] = {
     "wait": wait(24),
 }
 
-_DESCRIPTIONS: Final[dict[str, str]] = {
+ACTION_DESCRIPTIONS: Final[dict[str, str]] = {
     "jump": "Jump straight up on the spot.",
     "jump_right": "Jump while moving right — use to clear a gap, a pipe, or an enemy ahead.",
     "jump_left": "Jump while moving left.",
@@ -49,7 +55,7 @@ _DESCRIPTIONS: Final[dict[str, str]] = {
     "wait": "Do nothing for a moment. Use while an animation, cutscene or death plays out.",
 }
 
-ACTION_QUESTION: Final[dict[str, Any]] = {
+ACTION_QUESTION: Final[QuestionQuestionParamChoice] = {
     "type": "choice",
     "name": "action",
     "instructions": (
@@ -59,10 +65,10 @@ ACTION_QUESTION: Final[dict[str, Any]] = {
         "enemies; falling into a gap kills him. If a title screen or menu is showing, "
         "press Start to begin. If an animation or death is playing, wait."
     ),
-    "choices": [{"value": k, "description": v} for k, v in _DESCRIPTIONS.items()],
+    "choices": [{"value": k, "description": v} for k, v in ACTION_DESCRIPTIONS.items()],
 }
 
-SCREEN_QUESTION: Final[dict[str, Any]] = {
+SCREEN_QUESTION: Final[QuestionQuestionParamChoice] = {
     "type": "choice",
     "name": "screen_kind",
     "instructions": "What kind of screen is showing?",
@@ -75,7 +81,7 @@ SCREEN_QUESTION: Final[dict[str, Any]] = {
     ],
 }
 
-WAITING_QUESTION: Final[dict[str, Any]] = {
+WAITING_QUESTION: Final[QuestionQuestionParamPredicate] = {
     "type": "predicate",
     "name": "waiting_for_input",
     "instructions": (
@@ -84,7 +90,7 @@ WAITING_QUESTION: Final[dict[str, Any]] = {
     ),
 }
 
-QUESTIONS: Final[list[dict[str, Any]]] = [
+QUESTIONS: Final[list[Question]] = [
     ACTION_QUESTION,
     SCREEN_QUESTION,
     WAITING_QUESTION,

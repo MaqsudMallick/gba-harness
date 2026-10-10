@@ -1,19 +1,22 @@
 # gbharness
 
-Input layer for an agentic **Game Boy Advance** harness: an agent-facing tool surface that
-turns high-level button requests into frame-exact input on a real GBA emulator.
+A modular visual-game agent harness: model providers observe emulator frames, choose from a
+game-defined action space, and produce frame-exact input on a real GBA emulator.
 
 The emulator is mGBA, driven as a [libretro](https://github.com/libretro/libretro-common)
 core over `ctypes` — so there is no build step, no Python version constraint, and
 `retro_run()` is exactly one frame.
 
-Layers, each with its own plan:
+The layers deliberately depend inward, so changing the game or model does not rewrite the
+emulator:
 
-| Layer | Status | Plan |
+| Layer | Responsibility | Status |
 |---|---|---|
-| **Input** — button requests → frame-exact presses | built, 266 tests | [`PLAN-input-layer.md`](PLAN-input-layer.md) |
-| **Vision** — emulator frames → observations | planned | [`PLAN-vision-layer.md`](PLAN-vision-layer.md) |
-| **Agent** — the OpenAI Decisions loop | config done, rest planned | [`PLAN-agent-layer.md`](PLAN-agent-layer.md) |
+| **Input** | bounded actions → frame-exact controller state | built |
+| **Vision** | latest emulator framebuffer → PNG/RGB observation | built |
+| **Game policy** | goal, allowed macros, and descriptions | Mario starter policy built |
+| **Decision provider** | screenshot + state + action set → one decision | Vertex AI built; provider protocol is portable |
+| **Runner** | observe → decide → act → recover → verify | built |
 
 Dependencies mirror that split: the input layer imports with nothing but the standard
 library, and `vision` and `agent` are optional extras.
@@ -22,13 +25,15 @@ library, and `vision` and `agent` are optional extras.
 
 ```bash
 uv sync --all-extras
-./scripts/fetch-core.sh      # mgba_libretro.so into vendor/, no root needed
-cp .env.example .env         # then add your OPENAI_API_KEY
+./scripts/fetch-core.sh      # mGBA libretro core into vendor/, no root needed
+cp .env.example .env         # then configure neatlogs and Vertex for agent runs
 uv run pytest
 ```
 
-`.env` is gitignored and only the agent layer needs a key — the input and vision layers run
-without one. A real environment variable always beats `.env`.
+For autonomous play, fill in `NEATLOGS_API_KEY`, `GOOGLE_CLOUD_PROJECT`, and optionally
+`GOOGLE_CLOUD_LOCATION` in the gitignored `.env`, then configure Google Application Default
+Credentials. Human-controlled emulation and tests do not need cloud credentials. A real
+environment variable always beats `.env`.
 
 The emulator core is a **system artifact, not a Python dependency**, so it is fetched once
 rather than installed by `uv sync`. Any of these work, and discovery finds all three:
@@ -36,8 +41,11 @@ rather than installed by `uv sync`. Any of these work, and discovery finds all t
 | How | Where it lands |
 |---|---|
 | `./scripts/fetch-core.sh` | `vendor/libretro/` — no root needed |
-| `sudo apt install libretro-mgba` | a system core directory |
+| `sudo apt install libretro-mgba` | a system core directory on Debian/Ubuntu |
 | `export GBHARNESS_LIBRETRO_CORE=...` | wherever you point it |
+
+`fetch-core.sh` supports Apple Silicon, Intel macOS, and Debian/Ubuntu Linux. On macOS it
+downloads the official Libretro nightly core; on Linux it extracts the distribution package.
 
 Integration tests skip cleanly if no core is found; `examples/demo.py` prints the three
 options and exits.
@@ -97,10 +105,67 @@ That ROM is also the test suite's oracle. libretro doesn't expose KEYINPUT for r
 a cartridge that reports what it saw is what makes `tests/test_end_to_end.py` able to verify
 the whole chain — session → safety → scheduler → libretro callback → ARM7 → VRAM.
 
+To smoke-test a cartridge you own, put its `.gba` file under the gitignored `roms/`
+directory and run:
+
+```bash
+uv run python examples/run_rom.py --rom roms/game.gba --screenshot artifacts/boot.png
+```
+
+The runner validates the cartridge before giving it to the emulator, boots it, taps Start,
+advances the requested number of frames, and writes a screenshot. ROM images are deliberately
+never downloaded or committed by this project.
+
+To include a simple gameplay-input smoke test, hold Right and jump before capturing:
+
+```bash
+uv run python examples/run_rom.py --rom roms/game.gba \
+  --move-right-frames 90 --jump --screenshot artifacts/gameplay.png
+```
+
+## Live emulator window
+
+The same Libretro core can be driven interactively in a live window—there is no separate
+emulator process and no drift between what the viewer sees and what the harness controls:
+
+```bash
+uv run python examples/live_rom.py
+```
+
+Controls: arrow keys for the D-pad, `Z`/`X` for A/B, `A`/`S` for L/R, Enter for Start,
+Right Shift for Select, and Escape to quit.
+
+## Autonomous agent
+
+Vertex AI uses constrained JSON output as a decision classifier: each turn must select one
+key from the current game's finite action vocabulary. `DecisionProvider` is vendor-neutral,
+and `GamePolicy` is game-neutral, so a multiplayer game can provide a different goal and
+action table without importing Vertex or changing the runner.
+
+```bash
+# Prerequisites: NEATLOGS_API_KEY, GOOGLE_CLOUD_PROJECT, and ADC are configured.
+uv run python -m neatlogs doctor --probe --json
+uv run python examples/agent_rom.py --max-turns 100
+```
+
+The Pygame window says **AGENT CONTROL**, disables keyboard gameplay input, and displays the
+latest action, confidence, scene, and progress estimate. Use `--headless` for evaluation
+runs. Each run is grouped in neatlogs as `visual-game-agent`, including the Vertex call,
+agent decision, controller action, state changes, errors, and recovery attempts.
+
+The Mario action table in `src/gbharness/agent/policy.py` is only a starter adapter. Add a
+new `GamePolicy` for another game; no provider or emulator changes are required.
+
+## Hackathon evidence
+
+The project follows the official neatHack build-log workflow in [`hackathon.md`](hackathon.md).
+That file distinguishes completed checks from credential- or account-dependent evidence.
+ROMs, API keys, private traces, and account information are never committed.
+
 ## Checks
 
 ```bash
-uv run pytest        # 271 tests
-uv run ruff check src/ tests/
+uv run pytest        # 302 tests
+uv run ruff check src/ tests/ examples/
 uv run mypy
 ```

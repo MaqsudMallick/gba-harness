@@ -77,12 +77,13 @@ class Decider:
         for answer in decision.answers:
             if answer.type == "refusal":
                 refused.append(answer.name or "?")
-            elif answer.name == "action":
-                action = str(answer.choice)
-                confidence = float(answer.confidence)
-            elif answer.name == "screen_kind":
-                screen_kind = str(answer.choice)
-            elif answer.name == "waiting_for_input":
+            elif answer.type == "choice":
+                if answer.name == "action":
+                    action = str(answer.choice)
+                    confidence = float(answer.confidence)
+                elif answer.name == "screen_kind":
+                    screen_kind = str(answer.choice)
+            elif answer.type == "predicate" and answer.name == "waiting_for_input":
                 waiting = float(answer.probability)
 
         tokens = int(getattr(decision.usage, "input_tokens", 0) or 0)
