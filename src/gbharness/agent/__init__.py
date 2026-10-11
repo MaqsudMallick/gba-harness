@@ -39,9 +39,17 @@ from gbharness.agent.multiplayer import (
 from gbharness.agent.openai_questions import QUESTIONS
 from gbharness.agent.policy import ACTION_DESCRIPTIONS, ACTIONS, resolve
 from gbharness.agent.runner import AgentRunner, EpisodeResult, RunnerConfig, TurnRecord
-from gbharness.agent.team import TeamDecision, TeamDecisionProvider, TeamDecisionRequest
+from gbharness.agent.team import (
+    PlayerProposal,
+    TeamDecision,
+    TeamDecisionProvider,
+    TeamDecisionRequest,
+)
 from gbharness.agent.vertex import VertexDecisionProvider
-from gbharness.agent.vertex_team import VertexTeamDecisionProvider
+from gbharness.agent.vertex_team import (
+    HierarchicalVertexTeamDecisionProvider,
+    VertexTeamDecisionProvider,
+)
 from gbharness.agent.zelda import (
     FOUR_SWORDS_POLICY,
     FOUR_SWORDS_ROLES,
@@ -49,9 +57,13 @@ from gbharness.agent.zelda import (
     ZELDA_ACTIONS,
     FirstTrainingPuzzleResult,
     FourSwordsBootstrapResult,
+    FourSwordsVisualTargetNavigator,
     bootstrap_four_swords,
     first_training_reward_visible,
+    four_swords_dialogue_visible,
     four_swords_gameplay_visible,
+    four_swords_probe_target_reached,
+    four_swords_visual_target_plan,
     solve_first_training_puzzle,
 )
 
@@ -69,9 +81,11 @@ __all__ = [
     "FOUR_SWORDS_ROLES",
     "FirstTrainingPuzzleResult",
     "FourSwordsBootstrapResult",
+    "FourSwordsVisualTargetNavigator",
     "GamePolicy",
     "HumanActionSource",
     "HumanDecisionProvider",
+    "HierarchicalVertexTeamDecisionProvider",
     "LinkedAgentRunner",
     "LinkedEpisodeResult",
     "LinkedRunnerConfig",
@@ -96,13 +110,17 @@ __all__ = [
     "AutonomousPlayer",
     "PlayerDecision",
     "PlayerAssignment",
+    "PlayerProposal",
     "PlayerTurnRecord",
     "VisualPlayerAgent",
     "ZELDA_ACTIONS",
     "ZELDA_ACTION_DESCRIPTIONS",
     "bootstrap_four_swords",
     "first_training_reward_visible",
+    "four_swords_dialogue_visible",
     "four_swords_gameplay_visible",
+    "four_swords_probe_target_reached",
+    "four_swords_visual_target_plan",
     "observe_mario",
     "observe_mario_kart",
     "open_linked_lobby",

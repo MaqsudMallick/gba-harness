@@ -23,6 +23,10 @@ in this file.
 - [x] Record a corrected live four-agent gameplay trace: `651dabc1d005e5c15346b5899a107a47`
       (four Vertex calls, 4,106 input tokens, 372 output tokens). The one-turn bounded run
       ended at its configured turn limit and is evidence of integration, not room completion.
+- [x] Complete the first screenshot-only Four Swords warp objective with one human slot and
+      three Vertex agents. P1 completed the visible NPC dialogue under temporary autopilot.
+      P2, P3, and P4 then occupied three separate visible warp targets. The run completed in
+      32 turns and used one Neatlogs trace: `422e34af78765b442a6abcd9078c33a5`.
 - [ ] Add match telemetry: per-player decisions, recovery, lap/progress, finish order, and
       a Neatlogs trace that makes the competition inspectable.
 - [ ] Add gamepad bindings for human P3/P4; the backend already exposes four controller

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import permutations
 from typing import Final
 
 import numpy as np
@@ -21,6 +22,10 @@ ZELDA_ACTIONS: Final[dict[str, Action]] = {
     "move_down": hold("down", 18),
     "move_left": hold("left", 18),
     "move_right": hold("right", 18),
+    "face_up": tap("up", hold_frames=2, gap_frames=2),
+    "face_down": tap("down", hold_frames=2, gap_frames=2),
+    "face_left": tap("left", hold_frames=2, gap_frames=2),
+    "face_right": tap("right", hold_frames=2, gap_frames=2),
     "attack_up": hold(["up", "b"], 10),
     "attack_down": hold(["down", "b"], 10),
     "attack_left": hold(["left", "b"], 10),
@@ -37,6 +42,10 @@ ZELDA_ACTION_DESCRIPTIONS: Final[dict[str, str]] = {
     "move_down": "Move south for a short, controlled distance.",
     "move_left": "Move west for a short, controlled distance.",
     "move_right": "Move east for a short, controlled distance.",
+    "face_up": "Face north with a minimal direction tap.",
+    "face_down": "Face south with a minimal direction tap.",
+    "face_left": "Face west with a minimal direction tap.",
+    "face_right": "Face east with a minimal direction tap.",
     "attack_up": "Face north, move briefly, and attack with B.",
     "attack_down": "Face south, move briefly, and attack with B.",
     "attack_left": "Face west, move briefly, and attack with B.",
@@ -127,6 +136,218 @@ def four_swords_gameplay_visible(frame: RawFrame, players: int) -> bool:
         if int(np.count_nonzero(red)) < 120:
             return False
     return True
+
+
+def four_swords_dialogue_visible(frame: RawFrame) -> bool:
+    """Detect the large black dialogue box in Player 1's visible screen."""
+    view = to_rgb(split_player_frames(frame, 4)[0])
+    region = view[92:148, 4:236]
+    dark = np.max(region, axis=2) < 45
+    return float(np.count_nonzero(dark)) / float(dark.size) >= 0.45
+
+
+def four_swords_visual_target_plan(
+    stage: str,
+    views: tuple[RawFrame, ...],
+) -> dict[int, tuple[str, ...]]:
+    """Move the P2 scout to a visible circular target from pixels only."""
+    if stage != "probe_target" or len(views) < 2:
+        return {}
+    rgb = to_rgb(views[1])
+    targets = _orange_target_centres(rgb)
+    player = _link_position(rgb, 1)
+    if player is None or not targets:
+        return {}
+
+    target = min(
+        targets,
+        key=lambda point: (point[0] - player[0]) ** 2 + (point[1] - player[1]) ** 2,
+    )
+    return {1: _route_step(player, target)}
+
+
+def four_swords_probe_target_reached(views: tuple[RawFrame, ...]) -> bool:
+    """Confirm that the P2 scout overlaps a detected circular target."""
+    return four_swords_visual_target_plan("probe_target", views).get(1) == ("wait",)
+
+
+@dataclass(slots=True)
+class FourSwordsVisualTargetNavigator:
+    """Keep distinct screenshot-derived target assignments for P2 through P4."""
+
+    assignments: dict[int, int] = field(default_factory=dict)
+    tracked_targets: dict[int, tuple[int, int]] = field(default_factory=dict)
+
+    def __call__(
+        self,
+        stage: str,
+        views: tuple[RawFrame, ...],
+    ) -> dict[int, tuple[str, ...]]:
+        if stage == "probe_target":
+            return four_swords_visual_target_plan(stage, views)
+        if stage != "reach_warps" or len(views) < 4:
+            return {}
+
+        observations: dict[int, tuple[tuple[int, int], tuple[tuple[int, int], ...]]] = {}
+        for player in (1, 2, 3):
+            rgb = to_rgb(views[player])
+            position = _link_position(rgb, player)
+            targets = tuple(sorted(_orange_target_centres(rgb), key=lambda p: (p[1], p[0])))
+            if position is None or not targets:
+                continue
+            observations[player] = (position, targets)
+
+        if (
+            len(observations) == 3
+            and len(self.assignments) != 3
+            and all(len(targets) >= 4 for _position, targets in observations.values())
+        ):
+            candidates = permutations(range(4), 3)
+            best = min(
+                candidates,
+                key=lambda assignment: sum(
+                    _squared_distance(
+                        observations[player][0], observations[player][1][target_index]
+                    )
+                    for player, target_index in zip((1, 2, 3), assignment, strict=True)
+                ),
+            )
+            self.assignments = dict(zip((1, 2, 3), best, strict=True))
+            self.tracked_targets = {
+                player: observations[player][1][target_index]
+                for player, target_index in self.assignments.items()
+            }
+
+        plans: dict[int, tuple[str, ...]] = {}
+        for player in self.assignments:
+            observation = observations.get(player)
+            if observation is None:
+                plans[player] = ("wait",)
+                continue
+            position, targets = observation
+            previous_target = self.tracked_targets.get(player)
+            if previous_target is None:
+                plans[player] = ("wait",)
+                continue
+            target = min(targets, key=lambda point: _squared_distance(point, previous_target))
+            if _squared_distance(target, previous_target) > 55 * 55:
+                plans[player] = ("wait",)
+                continue
+            self.tracked_targets[player] = target
+            plans[player] = _route_step(position, target)
+        return plans
+
+    def all_assigned_players_reached(self, views: tuple[RawFrame, ...]) -> bool:
+        """Confirm that P2 through P4 overlap their fixed visual targets."""
+        plans = self("reach_warps", views)
+        return len(self.assignments) == 3 and all(
+            plans.get(player) == ("wait",) for player in (1, 2, 3)
+        )
+
+
+def _squared_distance(first: tuple[int, int], second: tuple[int, int]) -> int:
+    return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2
+
+
+def _route_step(
+    player: tuple[int, int],
+    target: tuple[int, int],
+) -> tuple[str, ...]:
+    dx = target[0] - player[0]
+    dy = target[1] - player[1]
+    if dx * dx + dy * dy <= 16 * 16:
+        return ("wait",)
+    if abs(dx) > abs(dy):
+        action = "move_right" if dx > 0 else "move_left"
+        distance = abs(dx)
+    else:
+        action = "move_down" if dy > 0 else "move_up"
+        distance = abs(dy)
+    return (action, action) if distance > 28 else (action,)
+
+
+def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
+    red = rgb[:, :, 0]
+    green = rgb[:, :, 1]
+    blue = rgb[:, :, 2]
+    mask = (red > 210) & (green > 45) & (green < 195) & (blue < 105)
+    centres: list[tuple[int, int]] = []
+    for xs, ys in _components(mask):
+        width = int(xs.max() - xs.min() + 1)
+        height = int(ys.max() - ys.min() + 1)
+        if len(xs) < 55 or not 16 <= width <= 55 or not 16 <= height <= 55:
+            continue
+        ratio = width / height
+        if 0.65 <= ratio <= 1.35 and int(ys.min()) >= 20:
+            centres.append((int(np.mean(xs)), int(np.mean(ys))))
+    return tuple(centres)
+
+
+def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
+    red = rgb[:, :, 0]
+    green = rgb[:, :, 1]
+    blue = rgb[:, :, 2]
+    if player == 1:
+        mask = (red > 165) & (green < 100) & (blue < 100)
+    elif player == 2:
+        blue_wide = blue.astype(np.int16)
+        red_wide = red.astype(np.int16)
+        mask = (
+            (blue > 105)
+            & (red < 115)
+            & (green < 175)
+            & (blue_wide > red_wide + 35)
+        )
+    elif player == 3:
+        mask = (red > 105) & (blue > 105) & (green < 125)
+    else:
+        raise ValueError(f"unsupported visual Link player index: {player}")
+    candidates: list[tuple[float, int, int]] = []
+    for xs, ys in _components(mask):
+        width = int(xs.max() - xs.min() + 1)
+        height = int(ys.max() - ys.min() + 1)
+        if not 4 <= len(xs) <= 180 or width > 22 or height > 28 or int(ys.min()) < 20:
+            continue
+        x = int(np.mean(xs))
+        y = int(np.mean(ys))
+        distance = float((x - 120) ** 2 + (y - 82) ** 2)
+        candidates.append((distance, x, y))
+    if not candidates:
+        return None
+    _, anchor_x, anchor_y = min(candidates)
+    nearby_y, nearby_x = np.nonzero(
+        mask
+        & (np.abs(np.indices(mask.shape)[1] - anchor_x) <= 16)
+        & (np.abs(np.indices(mask.shape)[0] - anchor_y) <= 24)
+    )
+    if not len(nearby_x):
+        return None
+    return int(np.mean(nearby_x)), int(nearby_y.max() + 4)
+
+
+def _components(mask: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
+    """Return eight-connected pixel components for a small boolean mask."""
+    pending = mask.copy()
+    height, width = pending.shape
+    result: list[tuple[np.ndarray, np.ndarray]] = []
+    for start_y, start_x in zip(*np.nonzero(pending), strict=True):
+        if not pending[start_y, start_x]:
+            continue
+        stack = [(int(start_x), int(start_y))]
+        pending[start_y, start_x] = False
+        xs: list[int] = []
+        ys: list[int] = []
+        while stack:
+            x, y = stack.pop()
+            xs.append(x)
+            ys.append(y)
+            for next_y in range(max(0, y - 1), min(height, y + 2)):
+                for next_x in range(max(0, x - 1), min(width, x + 2)):
+                    if pending[next_y, next_x]:
+                        pending[next_y, next_x] = False
+                        stack.append((next_x, next_y))
+        result.append((np.asarray(xs), np.asarray(ys)))
+    return tuple(result)
 
 
 def bootstrap_four_swords(

@@ -99,8 +99,9 @@ class WaitForHumanProvider:
 class FakeTeamProvider:
     name = "rotating-captain"
 
-    def __init__(self) -> None:
+    def __init__(self, *, stage: str = "explore") -> None:
         self.requests: list[TeamDecisionRequest] = []
+        self.stage = stage
 
     def decide_team(self, request: TeamDecisionRequest) -> TeamDecision:
         self.requests.append(request)
@@ -115,6 +116,8 @@ class FakeTeamProvider:
             captain="vertex:captain",
             input_tokens=100,
             output_tokens=20,
+            human_plan=("interact",),
+            stage=self.stage,
         )
 
 
@@ -342,9 +345,110 @@ def test_blocked_repeated_movement_escalates_recovery_actions() -> None:
 
     assert [turn.players[0].action for turn in result.turns] == [
         "move_down",
-        "attack_down",
-        "interact",
+        "move_up",
+        "move_right",
     ]
+
+
+def test_npc_autopilot_executes_only_the_captains_human_dialogue_plan() -> None:
+    source = HumanActionSource()
+    captain = FakeTeamProvider()
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    result = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(
+            max_turns=1,
+            max_model_calls=1,
+            autoplay_human_dialogue=True,
+        ),
+        team_provider=captain,
+    ).run()
+
+    assert result.turns[0].players[0].plan == ("interact",)
+
+
+def test_visual_dialogue_close_advances_to_single_scout_stage() -> None:
+    source = HumanActionSource()
+    captain = FakeTeamProvider(stage="advance_dialogue")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    dialogue_states = iter((True, False))
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(
+            max_turns=1,
+            max_model_calls=1,
+            autoplay_human_dialogue=True,
+        ),
+        team_provider=captain,
+        dialogue_detector=lambda _frame: next(dialogue_states),
+    )
+
+    result = runner.run()
+
+    assert result.turns[0].team_stage == "probe_target"
+
+
+def test_visual_probe_overlap_releases_all_agents() -> None:
+    source = HumanActionSource()
+    captain = FakeTeamProvider(stage="reach_warps")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=1, max_model_calls=1),
+        team_provider=captain,
+        probe_target_detector=lambda _views: True,
+    )
+    runner._team_stage = "probe_target"
+
+    result = runner.run()
+
+    assert captain.requests[0].stage == "reach_warps"
+    assert result.turns[0].team_stage == "reach_warps"
 
 
 def test_team_captain_assigns_three_actions_with_one_model_call() -> None:

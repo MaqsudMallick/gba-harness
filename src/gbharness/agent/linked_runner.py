@@ -13,12 +13,13 @@ from typing import Literal
 
 import numpy as np
 
+from gbharness.actions import Action
 from gbharness.agent.contracts import Decision, DecisionProvider, DecisionRequest, GamePolicy
 from gbharness.agent.human import HumanDecisionProvider
 from gbharness.agent.team import TeamDecision, TeamDecisionProvider, TeamDecisionRequest
 from gbharness.multiplayer import LinkedActionResult, LinkedSession
 from gbharness.observability import NullTelemetry, RunTelemetry
-from gbharness.vision.capture import FrameLatch
+from gbharness.vision.capture import FrameLatch, RawFrame
 from gbharness.vision.encode import to_png, to_rgb
 from gbharness.vision.multiplayer import split_player_frames
 
@@ -42,6 +43,7 @@ class LinkedRunnerConfig:
     confidence_threshold: float = 0.65
     terminal_confirmations: int = 2
     max_consecutive_errors: int = 3
+    autoplay_human_dialogue: bool = False
 
     def __post_init__(self) -> None:
         if self.max_turns < 1:
@@ -69,6 +71,7 @@ class PlayerTurnRecord:
     repeated_observations: int
     input_tokens: int
     output_tokens: int
+    plan: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +82,10 @@ class LinkedTurnRecord:
     players: tuple[PlayerTurnRecord, ...]
     team_instruction: str = ""
     captain: str = ""
+    execution_steps: int = 1
+    progress_detected: bool = False
+    changed_players: tuple[int, ...] = ()
+    team_stage: str = "explore"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,10 +112,23 @@ class LinkedAgentRunner:
     telemetry: RunTelemetry = field(default_factory=NullTelemetry)
     stop_event: threading.Event = field(default_factory=threading.Event)
     on_turn: Callable[[LinkedTurnRecord], None] | None = None
+    on_team_plan: Callable[[str], None] | None = None
+    dialogue_detector: Callable[[RawFrame], bool] | None = None
+    visual_plan_override: (
+        Callable[[str, tuple[RawFrame, ...]], dict[int, tuple[str, ...]]] | None
+    ) = None
+    probe_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
+    team_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
     _team_instruction: str = field(default="", init=False, repr=False)
     _team_captain: str = field(default="", init=False, repr=False)
     _team_input_tokens: int = field(default=0, init=False, repr=False)
     _team_output_tokens: int = field(default=0, init=False, repr=False)
+    _team_model_calls: int = field(default=0, init=False, repr=False)
+    _team_plans: dict[int, tuple[str, ...]] = field(default_factory=dict, init=False, repr=False)
+    _team_human_plan: tuple[str, ...] = field(default=(), init=False, repr=False)
+    _team_objective: str = field(default="not assigned", init=False, repr=False)
+    _team_stage: str = field(default="reach_npc", init=False, repr=False)
+    _dialogue_seen: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         players = self.session.port.players
@@ -132,7 +152,7 @@ class LinkedAgentRunner:
         terminal_count = 0
         status: LinkedRunStatus = "turn_limit"
         model_decisions_per_turn = (
-            1
+            int(getattr(self.team_provider, "calls_per_plan", 1))
             if self.team_provider is not None
             else sum(assignment.participant_type == "agent" for assignment in self.assignments)
         )
@@ -166,7 +186,22 @@ class LinkedAgentRunner:
                     break
 
                 composite = self.frames.require()
+                dialogue_before = (
+                    self.dialogue_detector(composite)
+                    if self.dialogue_detector is not None
+                    else False
+                )
+                self._dialogue_seen = self._dialogue_seen or dialogue_before
                 views = split_player_frames(composite, len(self.assignments))
+                if (
+                    self._team_stage == "probe_target"
+                    and self.probe_target_detector is not None
+                    and self.probe_target_detector(views)
+                ):
+                    self._team_stage = "reach_warps"
+                    self.telemetry.log(
+                        "Visual P2 target overlap advanced the team to reach_warps"
+                    )
                 rgbs = tuple(to_rgb(view) for view in views)
                 pngs = tuple(to_png(view) for view in views)
                 for player, rgb in enumerate(rgbs):
@@ -194,7 +229,11 @@ class LinkedAgentRunner:
                     for assignment in self.assignments
                 )
                 outcomes = self._decide_all(requests, turn, to_png(composite))
-                calls += model_decisions_per_turn
+                calls += (
+                    self._team_model_calls
+                    if self.team_provider is not None
+                    else model_decisions_per_turn
+                )
 
                 decisions: list[Decision] = []
                 for assignment, outcome in zip(self.assignments, outcomes, strict=True):
@@ -287,18 +326,15 @@ class LinkedAgentRunner:
                     )
                     for index, decision in enumerate(decisions)
                 )
-                actions = {
-                    assignment.player: self.policy.resolve(
-                        "wait" if assignment.participant_type == "human" else action_keys[index]
+                action_plans = self._action_plans(action_keys, decisions)
+                if self.visual_plan_override is not None:
+                    overrides = self.visual_plan_override(self._team_stage, views)
+                    action_plans = tuple(
+                        overrides.get(assignment.player, action_plans[index])
+                        for index, assignment in enumerate(self.assignments)
                     )
-                    for index, assignment in enumerate(self.assignments)
-                }
                 action_summary = {
-                    f"P{assignment.player + 1}": (
-                        f"live:{action_keys[index]}"
-                        if assignment.participant_type == "human"
-                        else action_keys[index]
-                    )
+                    f"P{assignment.player + 1}": list(action_plans[index])
                     for index, assignment in enumerate(self.assignments)
                 }
                 with self.telemetry.span(
@@ -307,23 +343,94 @@ class LinkedAgentRunner:
                     attributes={
                         "neatlogs.tool.name": "linked_controller",
                         "neatlogs.tool.description": (
-                            "Execute all four bounded controller macros on one emulator clock"
+                            "Execute a bounded multi-step team plan on one emulator clock"
                         ),
                         "neatlogs.tool.parameters": json.dumps(action_summary, sort_keys=True),
                         "turn": turn,
                         "frame.before": self.session.frame,
                     },
                 ) as controller_span:
-                    result = self.session.submit(actions)
+                    result, executed_plans = self._execute_plans(action_plans)
                     self.telemetry.annotate(
                         controller_span,
                         {
                             "frame.after": result.total_frames,
                             "frames.advanced": result.frames_advanced,
                             "emulation.ended": result.emulation_ended,
+                            "plan.steps": max(len(plan) for plan in executed_plans),
                         },
                     )
-                record = self._record(turn, action_keys, decisions, repeated, result)
+                recorded_plans = tuple(
+                    (action_keys[index],)
+                    if assignment.participant_type == "human"
+                    and not self.config.autoplay_human_dialogue
+                    else executed_plans[index]
+                    for index, assignment in enumerate(self.assignments)
+                )
+                after_frame = self.frames.require()
+                after_views = split_player_frames(after_frame, len(self.assignments))
+                after_rgbs = tuple(to_rgb(view) for view in after_views)
+                dialogue_after = (
+                    self.dialogue_detector(after_frame)
+                    if self.dialogue_detector is not None
+                    else False
+                )
+                if (
+                    self._team_stage == "advance_dialogue"
+                    and self._dialogue_seen
+                    and not dialogue_after
+                ):
+                    self._team_stage = "probe_target"
+                    self.telemetry.log(
+                        "Visual dialogue close advanced the team to probe_target"
+                    )
+                self._dialogue_seen = self._dialogue_seen or dialogue_after
+                visual_team_complete = (
+                    self._team_stage == "reach_warps"
+                    and self.team_target_detector is not None
+                    and self.team_target_detector(after_views)
+                )
+                if visual_team_complete:
+                    self._team_stage = "complete"
+                    self.telemetry.log(
+                        "Visual target overlap confirmed P2 through P4 completion"
+                    )
+                changed_players = tuple(
+                    player + 1
+                    for player, (before, after) in enumerate(zip(rgbs, after_rgbs, strict=True))
+                    if _meaningful_visual_change(before, after)
+                )
+                progress_detected = bool(changed_players)
+                with self.telemetry.span(
+                    "verify_visual_plan_progress",
+                    "GUARDRAIL",
+                    attributes={
+                        "turn": turn,
+                        "plan.steps": max(len(plan) for plan in executed_plans),
+                        "changed.players": ",".join(map(str, changed_players)),
+                    },
+                ) as progress_span:
+                    self.telemetry.annotate(
+                        progress_span,
+                        {
+                            "neatlogs.guardrail.passed": progress_detected,
+                            "neatlogs.guardrail.output": (
+                                "meaningful viewport change detected"
+                                if progress_detected
+                                else "no meaningful viewport changed; replan as blocked"
+                            ),
+                        },
+                    )
+                record = self._record(
+                    turn,
+                    tuple(plan[0] for plan in recorded_plans),
+                    decisions,
+                    repeated,
+                    result,
+                    recorded_plans,
+                    progress_detected,
+                    changed_players,
+                )
                 records.append(record)
                 for player, action in enumerate(action_keys):
                     recent[player].append(action)
@@ -336,6 +443,9 @@ class LinkedAgentRunner:
                 )
                 if self.on_turn is not None:
                     self.on_turn(record)
+                if visual_team_complete:
+                    status = "completed"
+                    break
                 if result.emulation_ended:
                     status = "stopped"
                     break
@@ -551,7 +661,14 @@ class LinkedAgentRunner:
             actions=self.policy.options,
             ai_players=ai_players,
             turn=turn,
+            player_images=tuple(request.image_png for request in requests),
+            player_roles=tuple(assignment.role for assignment in self.assignments),
+            stage=self._team_stage,
         )
+
+        self._team_model_calls = int(getattr(team_provider, "calls_per_plan", 1))
+        self._team_plans = {}
+        self._team_human_plan = ()
 
         def plan() -> TeamDecision:
             with self.telemetry.span(
@@ -570,6 +687,7 @@ class LinkedAgentRunner:
                     {
                         "team.captain": decision.captain,
                         "team.objective": decision.objective,
+                        "team.stage": decision.stage,
                         "team.human_instruction": decision.human_instruction,
                         "team.actions": json.dumps(
                             {
@@ -578,6 +696,16 @@ class LinkedAgentRunner:
                             },
                             sort_keys=True,
                         ),
+                        "team.plans": json.dumps(
+                            {
+                                f"P{player + 1}": list(plan)
+                                for player, plan in decision.plans.items()
+                            },
+                            sort_keys=True,
+                        ),
+                        "team.human_plan": json.dumps(decision.human_plan),
+                        "team.observer_count": len(decision.proposals),
+                        "team.model_calls": decision.model_calls,
                         "usage.input_tokens": decision.input_tokens,
                         "usage.output_tokens": decision.output_tokens,
                     },
@@ -673,6 +801,15 @@ class LinkedAgentRunner:
             self._team_captain = team.captain
             self._team_input_tokens = team.input_tokens
             self._team_output_tokens = team.output_tokens
+            self._team_model_calls = team.model_calls
+            self._team_plans = team.plans or {
+                player: (decision.action,) for player, decision in team.decisions.items()
+            }
+            self._team_human_plan = team.human_plan
+            self._team_objective = team.objective
+            self._team_stage = self._next_team_stage(team.stage)
+            if self.on_team_plan is not None:
+                self.on_team_plan(team.human_instruction)
             self.telemetry.log(
                 "Captain {captain} objective={objective}; P1 instruction={instruction}",
                 captain=team.captain,
@@ -680,6 +817,89 @@ class LinkedAgentRunner:
                 instruction=team.human_instruction,
             )
         return tuple(outcomes)
+
+    def _next_team_stage(self, proposed: str) -> str:
+        """Accept only forward stage changes from the visual team planner."""
+        stages = (
+            "reach_npc",
+            "advance_dialogue",
+            "probe_target",
+            "reach_warps",
+            "complete",
+        )
+        if proposed not in stages or self._team_stage not in stages:
+            return proposed
+        current = stages.index(self._team_stage)
+        candidate = stages.index(proposed)
+        if candidate <= current:
+            return self._team_stage
+        return stages[min(current + 1, len(stages) - 1)]
+
+    def _action_plans(
+        self,
+        action_keys: tuple[str, ...],
+        decisions: list[Decision],
+    ) -> tuple[tuple[str, ...], ...]:
+        plans: list[tuple[str, ...]] = []
+        for index, assignment in enumerate(self.assignments):
+            if assignment.participant_type == "human":
+                plans.append(
+                    self._team_human_plan
+                    if self.config.autoplay_human_dialogue
+                    else ("wait",)
+                )
+                continue
+            proposed = self._team_plans.get(assignment.player, (action_keys[index],))
+            if decisions[index].confidence < self.config.confidence_threshold:
+                proposed = ("wait",)
+            elif action_keys[index] != decisions[index].action:
+                proposed = (action_keys[index], "wait")
+            plans.append(
+                tuple(action if action in self.policy.actions else "wait" for action in proposed)
+                or ("wait",)
+            )
+        return tuple(plans)
+
+    def _execute_plans(
+        self,
+        plans: tuple[tuple[str, ...], ...],
+    ) -> tuple[LinkedActionResult, tuple[tuple[str, ...], ...]]:
+        """Execute a short team horizon locally without another model round trip."""
+        steps = max(len(plan) for plan in plans)
+        executed: list[list[str]] = [[] for _ in self.assignments]
+        total_advanced = 0
+        ended = False
+        for step in range(steps):
+            actions: dict[int, Action] = {}
+            for index, assignment in enumerate(self.assignments):
+                action = plans[index][step] if step < len(plans[index]) else "wait"
+                if assignment.participant_type == "human":
+                    provider = assignment.provider
+                    if isinstance(provider, HumanDecisionProvider):
+                        queued = provider.poll_action(timeout=0)
+                        if queued is not None:
+                            action = queued
+                        elif not self.config.autoplay_human_dialogue:
+                            action = "wait"
+                    else:
+                        action = "wait"
+                if action not in self.policy.actions:
+                    action = "wait"
+                executed[index].append(action)
+                actions[assignment.player] = self.policy.resolve(action)
+            step_result = self.session.submit(actions)
+            total_advanced += step_result.frames_advanced
+            ended = step_result.emulation_ended
+            if ended or self.stop_event.is_set():
+                break
+        return (
+            LinkedActionResult(
+                frames_advanced=total_advanced,
+                total_frames=self.session.frame,
+                emulation_ended=ended,
+            ),
+            tuple(tuple(plan) for plan in executed),
+        )
 
     def _safe_action(
         self,
@@ -702,18 +922,24 @@ class LinkedAgentRunner:
             return action
 
         direction = action.removeprefix("move_")
+        opposite = {
+            "up": "move_down",
+            "down": "move_up",
+            "left": "move_right",
+            "right": "move_left",
+        }
+        alternatives = {
+            "up": ("move_left", "move_right"),
+            "down": ("move_right", "move_left"),
+            "left": ("move_down", "move_up"),
+            "right": ("move_up", "move_down"),
+        }
         if repeated == 1:
-            recovery = f"attack_{direction}"
+            recovery = opposite[direction]
         elif repeated == 2:
-            recovery = "interact"
-        else:
-            alternatives = {
-                "up": ("move_left", "move_right"),
-                "down": ("move_right", "move_left"),
-                "left": ("move_down", "move_up"),
-                "right": ("move_up", "move_down"),
-            }
             recovery = alternatives[direction][player % 2]
+        else:
+            recovery = alternatives[direction][(player + 1) % 2]
         if recovery not in self.policy.actions:
             return "wait"
         self.telemetry.log(
@@ -749,10 +975,12 @@ class LinkedAgentRunner:
             f"Shared emulated frame: {self.session.frame}\n"
             f"Your recent actions: {own_recent}\n"
             f"Team actions last turn: {last_team_actions}\n"
+            f"Persistent team objective: {self._team_objective}\n"
+            f"Persistent team stage: {self._team_stage}\n"
             f"Consecutive identical private observations: {repeated}\n"
             "A non-zero identical-observation count means your last action did not move the "
-            "scene meaningfully. Do not repeat a blocked movement: try the matching attack, "
-            "interact with the obstacle, or route perpendicular to it.\n"
+            "scene meaningfully. Treat that direction as blocked. Do not attack a solid "
+            "wall or ledge. Back away, then route perpendicular to it.\n"
             + (
                 "Player 1 is human-controlled. Use your note for one concrete P1 instruction "
                 "that complements your chosen action.\n"
@@ -770,6 +998,9 @@ class LinkedAgentRunner:
         decisions: list[Decision],
         repeated: list[int],
         result: LinkedActionResult,
+        action_plans: tuple[tuple[str, ...], ...],
+        progress_detected: bool,
+        changed_players: tuple[int, ...],
     ) -> LinkedTurnRecord:
         players = tuple(
             PlayerTurnRecord(
@@ -784,6 +1015,7 @@ class LinkedAgentRunner:
                 repeated_observations=repeated[assignment.player],
                 input_tokens=decisions[index].input_tokens,
                 output_tokens=decisions[index].output_tokens,
+                plan=action_plans[index],
             )
             for index, assignment in enumerate(self.assignments)
         )
@@ -794,6 +1026,10 @@ class LinkedAgentRunner:
             players=players,
             team_instruction=self._team_instruction,
             captain=self._team_captain,
+            execution_steps=max(len(plan) for plan in action_plans),
+            progress_detected=progress_detected,
+            changed_players=changed_players,
+            team_stage=self._team_stage,
         )
 
 

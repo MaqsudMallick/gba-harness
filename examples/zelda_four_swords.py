@@ -19,6 +19,7 @@ from gbharness.agent import (
     FOUR_SWORDS_POLICY,
     FOUR_SWORDS_ROLES,
     FirstTrainingPuzzleResult,
+    FourSwordsVisualTargetNavigator,
     HumanActionSource,
     HumanDecisionProvider,
     LinkedAgentRunner,
@@ -29,6 +30,8 @@ from gbharness.agent import (
     VertexDecisionProvider,
     VertexTeamDecisionProvider,
     bootstrap_four_swords,
+    four_swords_dialogue_visible,
+    four_swords_probe_target_reached,
     solve_first_training_puzzle,
 )
 from gbharness.backends import LibretroMultiplayerPort, find_multiplayer_core, validate_rom
@@ -74,6 +77,11 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         choices=(0, 1, 2, 3, 4),
         help="one-based keyboard player; 0 means all agents (default: P1 in live mode)",
+    )
+    result.add_argument(
+        "--npc-autopilot",
+        action="store_true",
+        help="let the team planner move P1 and complete visible NPC dialogue without combat",
     )
     result.add_argument(
         "--smoke",
@@ -216,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
                     ai_providers.append(provider)
                     assignments.append(PlayerAssignment(player, role, provider))
 
+                target_navigator = (
+                    FourSwordsVisualTargetNavigator() if args.npc_autopilot else None
+                )
                 runner = LinkedAgentRunner(
                     session=linked,
                     frames=latch,
@@ -226,12 +237,30 @@ def main(argv: list[str] | None = None) -> int:
                         max_model_calls=args.max_model_calls,
                         confidence_threshold=settings.confidence_threshold,
                         max_consecutive_errors=args.max_consecutive_errors,
+                        autoplay_human_dialogue=args.npc_autopilot,
                     ),
                     team_provider=(
-                        VertexTeamDecisionProvider(tuple(ai_providers)) if human_player else None
+                        VertexTeamDecisionProvider(
+                            tuple(ai_providers),
+                            navigation_only=args.npc_autopilot,
+                        )
+                        if human_player
+                        else None
                     ),
                     telemetry=telemetry,
                     on_turn=_print_turn if args.log_turns else None,
+                    dialogue_detector=(
+                        four_swords_dialogue_visible if args.npc_autopilot else None
+                    ),
+                    visual_plan_override=target_navigator,
+                    probe_target_detector=(
+                        four_swords_probe_target_reached if args.npc_autopilot else None
+                    ),
+                    team_target_detector=(
+                        target_navigator.all_assigned_players_reached
+                        if target_navigator is not None
+                        else None
+                    ),
                 )
 
                 def puzzle_prelude(
@@ -271,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
                                 else "four_vertex_agents"
                             ),
                             "human.player": human_player,
+                            "human.npc_autopilot": args.npc_autopilot,
                             "runtime.walkthrough_access": False,
                             "models": ",".join(models),
                             "puzzle.prelude_enabled": prelude is not None,
@@ -350,7 +380,8 @@ def _print_turn(record: LinkedTurnRecord) -> None:
         for player in record.players
     )
     print(
-        f"turn={record.turn} frame={record.frame} +{record.frames_advanced} | {actions}",
+        f"turn={record.turn} stage={record.team_stage} frame={record.frame} "
+        f"+{record.frames_advanced} | {actions}",
         flush=True,
     )
 
