@@ -264,6 +264,7 @@ class FourSwordsVisualTargetNavigator:
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
             visible_grid = _forward_target_grid(rgb)
+            marked_grid = _forward_marked_target_grid(rgb)
             visible_targets = _merge_target_centres(
                 _orange_target_centres(rgb),
                 active_targets,
@@ -280,12 +281,12 @@ class FourSwordsVisualTargetNavigator:
                             self.cleared_return_players.add(player)
                     plans[player] = _forward_exploration_step(rgb, position)
                     continue
-                if visible_grid is None:
+                if marked_grid is None:
                     plans[player] = _forward_exploration_step(rgb, position)
                     continue
                 self.leaving_return_players.discard(player)
                 self.forward_grid_players.add(player)
-                grid = visible_grid
+                grid = marked_grid
             else:
                 grid = visible_grid if player in self.forward_grid_players else None
             if player in self.reached_players:
@@ -709,28 +710,34 @@ def _forward_target_grid(rgb: np.ndarray) -> tuple[tuple[int, int], ...] | None:
 def _forward_marked_target_grid(
     rgb: np.ndarray,
 ) -> tuple[tuple[int, int], ...] | None:
-    """Return a portal grid only when its pink forward marker is visible."""
-    marker = _pink_npc_position(rgb)
-    if marker is None:
-        return None
+    """Return a portal grid only when its red-orange forward marker is visible."""
     targets = _merge_target_centres(
         _orange_target_centres(rgb),
         _active_target_centres(rgb),
     )
     grids = _target_grids(targets)
-    matching = tuple(
-        grid
-        for grid in grids
-        if _squared_distance(
-            marker,
-            (
-                sum(point[0] for point in grid) // len(grid),
-                sum(point[1] for point in grid) // len(grid),
-            ),
+    for grid in grids:
+        centre_x = sum(point[0] for point in grid) // len(grid)
+        centre_y = sum(point[1] for point in grid) // len(grid)
+        marker = rgb[
+            max(0, centre_y - 12) : min(rgb.shape[0], centre_y + 13),
+            max(0, centre_x - 12) : min(rgb.shape[1], centre_x + 13),
+        ]
+        red = marker[:, :, 0]
+        green = marker[:, :, 1]
+        blue = marker[:, :, 2]
+        forward_pixels = (red > 150) & (green < 120) & (blue < 110)
+        return_pixels = (
+            (red > 140)
+            & (blue > 100)
+            & (red.astype(np.int16) > green.astype(np.int16) * 1.25)
+            & (blue.astype(np.int16) > green.astype(np.int16) * 1.10)
         )
-        <= 38 * 38
-    )
-    return matching[0] if matching else None
+        forward_count = int(np.count_nonzero(forward_pixels))
+        return_count = int(np.count_nonzero(return_pixels))
+        if forward_count >= 15 and forward_count > return_count:
+            return grid
+    return None
 
 
 def _forward_exploration_step(
@@ -744,16 +751,6 @@ def _forward_exploration_step(
     if abs(dx) <= 7:
         return ("move_up",)
     return _precision_route_step(position, (opening[0], position[1]))
-
-
-def _forward_portal_search_step(
-    rgb: np.ndarray,
-    position: tuple[int, int],
-) -> tuple[str, ...]:
-    """Leave a visible return grid toward the forward grid below it."""
-    if _forward_target_grid(rgb) is not None:
-        return ("move_down",)
-    return _forward_exploration_step(rgb, position)
 
 
 def _visible_wall_opening(

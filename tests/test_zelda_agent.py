@@ -7,7 +7,6 @@ import numpy as np
 from gbharness.agent.zelda import (
     FourSwordsVisualTargetNavigator,
     _forward_marked_target_grid,
-    _forward_portal_search_step,
     _link_position,
     _order_target_grid,
     _partial_portal_target,
@@ -320,33 +319,26 @@ def test_forward_grid_rejects_the_return_portal_marker() -> None:
         rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
         rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
 
-    # The red U-shaped return marker is not the pink forward marker.
-    rgb[58:68, 90:100] = (190, 30, 25)
+    # The pink marker identifies the lower return portal.
+    rgb[58:68, 90:100] = (222, 40, 165)
     assert _forward_marked_target_grid(rgb) is None
 
-    rgb[58:68, 90:100] = (222, 40, 165)
-    assert _forward_marked_target_grid(rgb) is not None
-
-
-def test_portal_search_moves_down_from_a_visible_return_grid() -> None:
-    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
-    for x, y in ((70, 40), (120, 40), (70, 88), (120, 88)):
-        rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
-        rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+    # The red-orange curved marker identifies the forward portal.
     rgb[58:68, 90:100] = (190, 30, 25)
-
-    assert _forward_portal_search_step(rgb, (150, 75)) == ("move_down",)
+    assert _forward_marked_target_grid(rgb) is not None
 
 
 def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None:
     navigator = FourSwordsVisualTargetNavigator()
 
-    def frame(with_grid: bool, index: int) -> RawFrame:
+    def frame(marker: str | None, index: int) -> RawFrame:
         rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
-        if with_grid:
+        if marker is not None:
             for x, y in ((70, 40), (120, 40), (70, 88), (120, 88)):
                 rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
                 rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+            marker_colour = (222, 40, 165) if marker == "return" else (190, 30, 25)
+            rgb[58:68, 90:100] = marker_colour
         packed = (
             ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
@@ -360,18 +352,24 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
             index=index,
         )
 
-    return_view = frame(True, 0)
-    blank_view = frame(False, 1)
+    return_view = frame("return", 0)
+    blank_view = frame(None, 1)
+    forward_view = frame("forward", 2)
     first = navigator("reach_warps", (return_view,) * 4)
     second = navigator("reach_warps", (blank_view,) * 4)
     third = navigator("reach_warps", (blank_view,) * 4)
-    forward = navigator("reach_warps", (return_view,) * 4)
+    rejected_return = navigator("reach_warps", (return_view,) * 4)
 
     assert first == {1: ("move_up",), 2: ("move_up",), 3: ("move_up",)}
     assert second == first
     assert third == first
-    assert all(player not in navigator.leaving_return_players for player in (1, 2, 3))
+    assert rejected_return == first
+    assert all(player in navigator.leaving_return_players for player in (1, 2, 3))
+
+    forward = navigator("reach_warps", (forward_view,) * 4)
+
     assert forward != first
+    assert all(player not in navigator.leaving_return_players for player in (1, 2, 3))
 
 
 def test_visible_reached_teammate_ignores_a_false_colour_match() -> None:
