@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
+import json
 import threading
 from collections import deque
 from collections.abc import Callable
@@ -28,6 +29,7 @@ class PlayerAssignment:
     player: int
     role: str
     provider: DecisionProvider
+    participant_type: Literal["agent", "human"] = "agent"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,8 +121,20 @@ class LinkedAgentRunner:
         output_tokens = 0
         terminal_count = 0
         status: LinkedRunStatus = "turn_limit"
+        model_decisions_per_turn = sum(
+            assignment.participant_type == "agent" for assignment in self.assignments
+        )
 
-        with self.telemetry.span("linked_game_agent_episode", "WORKFLOW"):
+        with self.telemetry.span(
+            "coordinate_four_player_decisions",
+            "CHAIN",
+            attributes={
+                "game": self.policy.name,
+                "participant.count": len(self.assignments),
+                "turn.limit": self.config.max_turns,
+                "model_call.limit": self.config.max_model_calls,
+            },
+        ) as episode_span:
             self.telemetry.log(
                 "linked episode started for {game} with {players} players",
                 game=self.policy.name,
@@ -130,7 +144,7 @@ class LinkedAgentRunner:
                 if self.stop_event.is_set():
                     status = "stopped"
                     break
-                if calls + len(self.assignments) > self.config.max_model_calls:
+                if calls + model_decisions_per_turn > self.config.max_model_calls:
                     status = "call_budget"
                     self.telemetry.log(
                         "model call budget reached at {calls} calls",
@@ -163,8 +177,8 @@ class LinkedAgentRunner:
                     )
                     for assignment in self.assignments
                 )
-                outcomes = self._decide_all(requests)
-                calls += len(outcomes)
+                outcomes = self._decide_all(requests, turn)
+                calls += model_decisions_per_turn
 
                 decisions: list[Decision] = []
                 for assignment, outcome in zip(self.assignments, outcomes, strict=True):
@@ -195,22 +209,75 @@ class LinkedAgentRunner:
                         decisions.append(outcome)
                         input_tokens += outcome.input_tokens
                         output_tokens += outcome.output_tokens
+                        self.telemetry.log(
+                            "P{player} decided {action} with confidence {confidence}; "
+                            "scene={scene}; terminal={terminal}; note={note}",
+                            player=player + 1,
+                            action=outcome.action,
+                            confidence=outcome.confidence,
+                            scene=outcome.scene,
+                            terminal=outcome.terminal,
+                            note=outcome.note,
+                        )
 
-                if all(decision.terminal for decision in decisions):
-                    terminal_count += 1
-                    if terminal_count >= self.config.terminal_confirmations:
-                        status = "completed"
-                        break
-                else:
-                    terminal_count = 0
+                with self.telemetry.span(
+                    "verify_team_completion",
+                    "GUARDRAIL",
+                    attributes={
+                        "neatlogs.guardrail.input": json.dumps(
+                            [decision.terminal for decision in decisions]
+                        ),
+                        "turn": turn,
+                    },
+                ) as guardrail_span:
+                    unanimous = all(decision.terminal for decision in decisions)
+                    terminal_count = terminal_count + 1 if unanimous else 0
+                    passed = terminal_count >= self.config.terminal_confirmations
+                    self.telemetry.annotate(
+                        guardrail_span,
+                        {
+                            "neatlogs.guardrail.passed": passed,
+                            "neatlogs.guardrail.output": (
+                                f"{terminal_count}/{self.config.terminal_confirmations} "
+                                "consecutive unanimous confirmations"
+                            ),
+                        },
+                    )
+                if passed:
+                    status = "completed"
+                    break
 
                 action_keys = tuple(self._safe_action(decision) for decision in decisions)
                 actions = {
                     assignment.player: self.policy.resolve(action_keys[index])
                     for index, assignment in enumerate(self.assignments)
                 }
-                with self.telemetry.span("execute_linked_controller_actions", "TOOL"):
+                action_summary = {
+                    f"P{assignment.player + 1}": action_keys[index]
+                    for index, assignment in enumerate(self.assignments)
+                }
+                with self.telemetry.span(
+                    "execute_synchronized_controller_actions",
+                    "TOOL",
+                    attributes={
+                        "neatlogs.tool.name": "linked_controller",
+                        "neatlogs.tool.description": (
+                            "Execute all four bounded controller macros on one emulator clock"
+                        ),
+                        "neatlogs.tool.parameters": json.dumps(action_summary, sort_keys=True),
+                        "turn": turn,
+                        "frame.before": self.session.frame,
+                    },
+                ) as controller_span:
                     result = self.session.submit(actions)
+                    self.telemetry.annotate(
+                        controller_span,
+                        {
+                            "frame.after": result.total_frames,
+                            "frames.advanced": result.frames_advanced,
+                            "emulation.ended": result.emulation_ended,
+                        },
+                    )
                 record = self._record(turn, action_keys, decisions, repeated, result)
                 records.append(record)
                 for player, action in enumerate(action_keys):
@@ -228,6 +295,17 @@ class LinkedAgentRunner:
                     status = "stopped"
                     break
 
+            self.telemetry.annotate(
+                episode_span,
+                {
+                    "episode.status": status,
+                    "episode.turns": len(records),
+                    "episode.model_calls": calls,
+                    "episode.input_tokens": input_tokens,
+                    "episode.output_tokens": output_tokens,
+                },
+            )
+
         return LinkedEpisodeResult(
             status=status,
             turns=tuple(records),
@@ -239,11 +317,55 @@ class LinkedAgentRunner:
         )
 
     def _decide_all(
-        self, requests: tuple[DecisionRequest, ...]
+        self, requests: tuple[DecisionRequest, ...], turn: int
     ) -> tuple[Decision | BaseException, ...]:
         def call(assignment: PlayerAssignment, request: DecisionRequest) -> Decision:
-            with self.telemetry.span("choose_player_action", "AGENT"):
-                return assignment.provider.decide(request)
+            is_human = assignment.participant_type == "human"
+            span_name = (
+                f"player_{assignment.player + 1}_human_input"
+                if is_human
+                else f"player_{assignment.player + 1}_decision"
+            )
+            span_kind = "TOOL" if is_human else "AGENT"
+            attributes: dict[str, object] = {
+                "player.number": assignment.player + 1,
+                "player.role": assignment.role,
+                "participant.type": assignment.participant_type,
+                "agent.provider": assignment.provider.name,
+                "turn": turn,
+                "observation.bytes": len(request.image_png),
+                "allowed.actions": ",".join(option.key for option in request.actions),
+            }
+            if is_human:
+                attributes.update(
+                    {
+                        "neatlogs.tool.name": "human_keyboard_controller",
+                        "neatlogs.tool.description": "Capture one bounded player action",
+                        "neatlogs.tool.parameters": "keyboard action queue",
+                    }
+                )
+            with self.telemetry.span(
+                span_name,
+                span_kind,
+                attributes=attributes,
+            ) as decision_span:
+                decision = assignment.provider.decide(request)
+                self.telemetry.annotate(
+                    decision_span,
+                    {
+                        "decision.action": decision.action,
+                        "decision.confidence": decision.confidence,
+                        "decision.scene": decision.scene,
+                        "decision.terminal": decision.terminal,
+                        "decision.progress": (
+                            decision.progress if decision.progress is not None else -1.0
+                        ),
+                        "decision.note": decision.note,
+                        "usage.input_tokens": decision.input_tokens,
+                        "usage.output_tokens": decision.output_tokens,
+                    },
+                )
+                return decision
 
         with ThreadPoolExecutor(
             max_workers=len(self.assignments), thread_name_prefix="linked-agent"

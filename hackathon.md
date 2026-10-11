@@ -125,6 +125,26 @@ portable across games and multiplayer formats.
   view and chose one action; the team advanced in lockstep. Trace
   `651dabc1d005e5c15346b5899a107a47` records 4,106 input and 372 output tokens. The run ended
   at its configured one-turn limit and does not claim room completion.
+- Completed: restructured Four Swords observability around one
+  `four_swords_puzzle_attempt` WORKFLOW trace. The verified local puzzle motor skill is now a
+  child CHAIN with phase TOOL spans and a framebuffer GUARDRAIL; the subsequent team loop is
+  another child CHAIN with distinct P1-P4 decision/input spans, nested wrapped Vertex calls,
+  synchronized controller parameters, consensus checks, retries, token totals, and final run
+  outcome. This preserves the important distinction that the first switch puzzle is solved
+  by the local visual motor skill rather than claiming it was solved by the LLMs.
+- Completed: added a live human-plus-agent mode. Live Zelda defaults to P1 keyboard input and
+  three Vertex players, records the human lane as a TOOL rather than an LLM AGENT, and does
+  not count human actions against the model-call budget. Headless mode and
+  `--human-player 0` preserve the four-agent evaluation.
+- Completed focused verification for the trace hierarchy and human input adapter: Ruff and
+  targeted strict mypy passed, and 9 focused tests passed. Full regression verification also
+  passed all 348 tests.
+- Completed a fresh hosted single-trace evaluation after the instrumentation change. Trace
+  `2d9b1ce01e94f88fc7622be13093d61b` includes the verified puzzle prelude and one four-model
+  synchronized decision turn with 4,110 input and 325 output tokens. The process observed
+  one trace ID for the run and saved local visual evidence at
+  `artifacts/zelda-single-trace-verification.png`; dashboard-tree inspection or a sanitized
+  share link remains required before public submission.
 
 ## Demo
 

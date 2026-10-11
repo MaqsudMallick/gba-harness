@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import cast
 
 from gbharness.agent.contracts import Decision, DecisionRequest
@@ -58,6 +62,35 @@ class FakeProvider:
     def decide(self, request: DecisionRequest) -> Decision:
         self.requests.append(request)
         return next(self.decisions)
+
+
+@dataclass
+class RecordingTelemetry:
+    spans: list[tuple[str, str, dict[str, object]]] = field(default_factory=list)
+    annotations: dict[str, dict[str, object]] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    @contextmanager
+    def span(
+        self,
+        name: str,
+        kind: str,
+        *,
+        capture_input: bool = False,
+        capture_output: bool = False,
+        attributes: Mapping[str, object] | None = None,
+    ) -> Iterator[str]:
+        del capture_input, capture_output
+        with self._lock:
+            self.spans.append((name, kind, dict(attributes or {})))
+        yield name
+
+    def annotate(self, span: str, attributes: Mapping[str, object]) -> None:
+        with self._lock:
+            self.annotations.setdefault(span, {}).update(attributes)
+
+    def log(self, template: str, **values: object) -> None:
+        del template, values
 
 
 def assignments(decisions: list[list[Decision]]) -> tuple[PlayerAssignment, ...]:
@@ -140,3 +173,56 @@ def test_model_call_budget_stops_before_partial_team_turn() -> None:
     assert result.status == "call_budget"
     assert result.model_calls == 0
     assert result.turns == ()
+
+
+def test_one_linked_chain_names_every_player_and_shared_execution() -> None:
+    telemetry = RecordingTelemetry()
+    assigned = assignments([[Decision("wait", 0.9, "room")] for _ in range(4)])
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=1, max_model_calls=4),
+        telemetry=telemetry,
+    )
+
+    runner.run()
+
+    kinds = {name: kind for name, kind, _attributes in telemetry.spans}
+    assert kinds["coordinate_four_player_decisions"] == "CHAIN"
+    assert [kinds[f"player_{player}_decision"] for player in range(1, 5)] == [
+        "AGENT",
+        "AGENT",
+        "AGENT",
+        "AGENT",
+    ]
+    assert kinds["verify_team_completion"] == "GUARDRAIL"
+    assert kinds["execute_synchronized_controller_actions"] == "TOOL"
+    assert telemetry.annotations["coordinate_four_player_decisions"]["episode.model_calls"] == 4
+
+
+def test_human_participant_is_a_tool_and_does_not_consume_model_budget() -> None:
+    telemetry = RecordingTelemetry()
+    assigned = list(assignments([[Decision("wait", 0.9, "room")] for _ in range(4)]))
+    human_provider = FakeProvider("human:keyboard", [Decision("move_up", 1.0, "human_input")])
+    assigned[0] = PlayerAssignment(
+        0,
+        "human leader",
+        human_provider,
+        participant_type="human",
+    )
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=tuple(assigned),
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=1, max_model_calls=3),
+        telemetry=telemetry,
+    )
+
+    result = runner.run()
+
+    kinds = {name: kind for name, kind, _attributes in telemetry.spans}
+    assert kinds["player_1_human_input"] == "TOOL"
+    assert result.model_calls == 3

@@ -8,6 +8,7 @@ from gbharness.agent.contracts import (
     GamePolicy,
 )
 from gbharness.agent.decide import Decider, Verdict
+from gbharness.agent.human import HumanActionSource, HumanDecisionProvider
 from gbharness.agent.linked_runner import (
     LinkedAgentRunner,
     LinkedEpisodeResult,
@@ -67,6 +68,8 @@ __all__ = [
     "FirstTrainingPuzzleResult",
     "FourSwordsBootstrapResult",
     "GamePolicy",
+    "HumanActionSource",
+    "HumanDecisionProvider",
     "LinkedAgentRunner",
     "LinkedEpisodeResult",
     "LinkedRunnerConfig",

@@ -6,7 +6,7 @@ not need a tracing account, and importing the core package stays side-effect fre
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -18,8 +18,16 @@ class RunTelemetry(Protocol):
     """The tiny tracing surface used by the runner."""
 
     def span(
-        self, name: str, kind: str, *, capture_input: bool = False, capture_output: bool = False
+        self,
+        name: str,
+        kind: str,
+        *,
+        capture_input: bool = False,
+        capture_output: bool = False,
+        attributes: Mapping[str, object] | None = None,
     ) -> AbstractContextManager[Any]: ...
+
+    def annotate(self, span: Any, attributes: Mapping[str, object]) -> None: ...
 
     def log(self, template: str, **values: object) -> None: ...
 
@@ -28,10 +36,19 @@ class NullTelemetry:
     """Test/offline telemetry with exactly the same runner contract."""
 
     def span(
-        self, name: str, kind: str, *, capture_input: bool = False, capture_output: bool = False
+        self,
+        name: str,
+        kind: str,
+        *,
+        capture_input: bool = False,
+        capture_output: bool = False,
+        attributes: Mapping[str, object] | None = None,
     ) -> AbstractContextManager[None]:
-        del name, kind, capture_input, capture_output
+        del name, kind, capture_input, capture_output, attributes
         return nullcontext()
+
+    def annotate(self, span: Any, attributes: Mapping[str, object]) -> None:
+        del span, attributes
 
     def log(self, template: str, **values: object) -> None:
         del template, values
@@ -52,6 +69,11 @@ class NeatlogsSession:
         """Return the most recently opened trace for shareable run evidence."""
         return self._trace_ids[-1] if self._trace_ids else None
 
+    @property
+    def trace_ids(self) -> tuple[str, ...]:
+        """Return every distinct trace observed during this one-shot session."""
+        return tuple(self._trace_ids)
+
     def start(self) -> NeatlogsSession:
         neatlogs.init(
             api_key=self.api_key,
@@ -67,16 +89,26 @@ class NeatlogsSession:
 
     @contextmanager
     def span(
-        self, name: str, kind: str, *, capture_input: bool = False, capture_output: bool = False
+        self,
+        name: str,
+        kind: str,
+        *,
+        capture_input: bool = False,
+        capture_output: bool = False,
+        attributes: Mapping[str, object] | None = None,
     ) -> Iterator[Any]:
         del capture_input, capture_output
-        with neatlogs.trace(name, kind=kind) as span:
+        with neatlogs.trace(name, kind=kind, **dict(attributes or {})) as span:
             context = span.get_span_context()
             if context.is_valid:
                 trace_id = f"{context.trace_id:032x}"
                 if trace_id not in self._trace_ids:
                     self._trace_ids.append(trace_id)
             yield span
+
+    def annotate(self, span: Any, attributes: Mapping[str, object]) -> None:
+        for key, value in attributes.items():
+            span.set_attribute(key, value)
 
     def log(self, template: str, **values: object) -> None:
         neatlogs.log(template, **values)
@@ -95,4 +127,3 @@ class NeatlogsSession:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
-

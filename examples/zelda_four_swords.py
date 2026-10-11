@@ -19,6 +19,8 @@ from gbharness.agent import (
     FOUR_SWORDS_POLICY,
     FOUR_SWORDS_ROLES,
     FirstTrainingPuzzleResult,
+    HumanActionSource,
+    HumanDecisionProvider,
     LinkedAgentRunner,
     LinkedEpisodeResult,
     LinkedRunnerConfig,
@@ -59,12 +61,18 @@ def parser() -> argparse.ArgumentParser:
         "--max-model-calls",
         type=int,
         default=20,
-        help="hard team-wide ceiling; one complete turn costs four calls",
+        help="hard team-wide ceiling; each AI player costs one call per turn",
     )
     result.add_argument(
         "--models",
         default=os.environ.get("GBHARNESS_ZELDA_MODELS", ",".join(DEFAULT_MODELS)),
-        help="exactly four comma-separated Vertex model IDs",
+        help="four comma-separated Vertex model IDs; a human player's entry is unused",
+    )
+    result.add_argument(
+        "--human-player",
+        type=int,
+        choices=(0, 1, 2, 3, 4),
+        help="one-based keyboard player; 0 means all agents (default: P1 in live mode)",
     )
     result.add_argument(
         "--smoke",
@@ -113,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     models = tuple(model.strip() for model in args.models.split(",") if model.strip())
     if len(models) != 4:
         raise SystemExit(f"--models needs exactly four Vertex model IDs, got {len(models)}")
+    human_player = args.human_player if args.human_player is not None else (1 if args.live else 0)
+    if human_player and not args.live:
+        raise SystemExit("--human-player requires --live so keyboard input can be captured")
 
     rom = args.rom.read_bytes()
     validate_rom(rom)
@@ -159,8 +170,19 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_name="zelda-four-swords-multi-agent",
                 endpoint=settings.neatlogs_endpoint,
             ) as telemetry:
+                human_actions = HumanActionSource() if human_player else None
                 assignments: list[PlayerAssignment] = []
                 for player, (model, role) in enumerate(zip(models, FOUR_SWORDS_ROLES, strict=True)):
+                    if human_actions is not None and player == human_player - 1:
+                        assignments.append(
+                            PlayerAssignment(
+                                player,
+                                role,
+                                HumanDecisionProvider(human_actions),
+                                participant_type="human",
+                            )
+                        )
+                        continue
                     vertex = VertexDecisionProvider(
                         project=project,
                         location=settings.google_cloud_location,
@@ -210,13 +232,72 @@ def main(argv: list[str] | None = None) -> int:
                     return solved
 
                 prelude = None if args.skip_setup or args.skip_first_puzzle else puzzle_prelude
+
+                def run_attempt(
+                    on_phase: Callable[[str], None] | None = None,
+                ) -> LinkedEpisodeResult:
+                    with telemetry.span(
+                        "four_swords_puzzle_attempt",
+                        "WORKFLOW",
+                        attributes={
+                            "game": FOUR_SWORDS_POLICY.name,
+                            "objective": FOUR_SWORDS_POLICY.goal,
+                            "participant.count": 4,
+                            "participant.mode": (
+                                "one_human_three_vertex_agents"
+                                if human_player
+                                else "four_vertex_agents"
+                            ),
+                            "human.player": human_player,
+                            "runtime.walkthrough_access": False,
+                            "models": ",".join(models),
+                            "puzzle.prelude_enabled": prelude is not None,
+                        },
+                    ) as root_span:
+                        telemetry.log(
+                            "Four Swords team attempt started with four private visual "
+                            "observations and one shared emulator clock"
+                        )
+                        if prelude is not None:
+                            prelude(on_phase)
+                            if on_phase is not None:
+                                on_phase(
+                                    "PUZZLE 1 SOLVED — human and agents choosing next actions"
+                                    if human_player
+                                    else "PUZZLE 1 SOLVED — four agents choosing next actions"
+                                )
+                        episode = runner.run()
+                        telemetry.annotate(
+                            root_span,
+                            {
+                                "run.status": episode.status,
+                                "run.turns": len(episode.turns),
+                                "run.frames": episode.total_frames,
+                                "run.model_calls": episode.model_calls,
+                                "run.input_tokens": episode.input_tokens,
+                                "run.output_tokens": episode.output_tokens,
+                            },
+                        )
+                        return episode
+
                 if args.live:
-                    result = _run_live(runner, latch, args.scale, prelude=prelude)
+                    result = _run_live(
+                        runner,
+                        latch,
+                        args.scale,
+                        run_attempt=run_attempt,
+                        includes_prelude=prelude is not None,
+                        human_actions=human_actions,
+                        human_player=human_player,
+                    )
                 else:
-                    if prelude is not None:
-                        prelude()
-                    result = runner.run()
+                    result = run_attempt()
                 final_png = to_png(latch.require())
+                if len(telemetry.trace_ids) != 1:
+                    raise RuntimeError(
+                        "expected one Neatlogs trace for the complete team run, got "
+                        f"{len(telemetry.trace_ids)}: {','.join(telemetry.trace_ids)}"
+                    )
                 summary = (
                     f"zelda agents finished: status={result.status}, "
                     f"turns={len(result.turns)}, frames={result.total_frames}, "
@@ -255,7 +336,10 @@ def _run_live(
     latch: FrameLatch,
     scale: int,
     *,
-    prelude: Callable[[Callable[[str], None] | None], FirstTrainingPuzzleResult] | None = None,
+    run_attempt: Callable[[Callable[[str], None] | None], LinkedEpisodeResult],
+    includes_prelude: bool,
+    human_actions: HumanActionSource | None,
+    human_player: int,
 ) -> LinkedEpisodeResult:
     """Keep a responsive four-console window open while agents run in a worker."""
     pygame.init()
@@ -264,13 +348,16 @@ def _run_live(
     game_size = (frame.width * scale, frame.height * scale)
     panel_height = 146
     screen = pygame.display.set_mode((game_size[0], game_size[1] + panel_height))
-    pygame.display.set_caption("gbharness — ZELDA FOUR SWORDS — 4 VERTEX AGENTS")
+    pygame.display.set_caption(
+        "gbharness — ZELDA FOUR SWORDS — "
+        + ("1 HUMAN + 3 VERTEX AGENTS" if human_player else "4 VERTEX AGENTS")
+    )
     font = pygame.font.Font(None, 22)
     clock = pygame.time.Clock()
     latest: list[LinkedTurnRecord | None] = [None]
     phase = [
         "FAST MOTOR SKILL — preparing the first cooperative puzzle"
-        if prelude is not None
+        if includes_prelude
         else "4 VERTEX AGENTS — observing the current room"
     ]
     outcome: list[LinkedEpisodeResult] = []
@@ -286,10 +373,8 @@ def _run_live(
 
     def work() -> None:
         try:
-            if prelude is not None:
-                prelude(lambda message: phase.__setitem__(0, message))
-                phase[0] = "PUZZLE 1 SOLVED — four Vertex agents are observing"
-            outcome.append(runner.run())
+            outcome.append(run_attempt(lambda message: phase.__setitem__(0, message)))
+            phase[0] = "PUZZLE 1 SOLVED — run trace finalized"
         except BaseException as exc:
             failure.append(exc)
 
@@ -303,7 +388,17 @@ def _run_live(
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
                 ):
                     runner.stop_event.set()
+                    if human_actions is not None:
+                        human_actions.submit("wait")
                     running = False
+                elif (
+                    human_actions is not None
+                    and event.type == pygame.KEYDOWN
+                    and not getattr(event, "repeat", False)
+                ):
+                    action = _human_action_for_key(event.key)
+                    if action is not None:
+                        human_actions.submit(action)
 
             latest_frame = latch.latest()
             if latest_frame is None:
@@ -321,15 +416,17 @@ def _run_live(
             header = "RUN FINISHED — press Esc to close" if complete else phase[0]
             lines = [header]
             if record is None:
-                lines.append("All four players are observing the dungeon…")
+                lines.append("The team is preparing its first synchronized decision…")
             else:
                 for player in record.players:
                     model = player.provider.removeprefix("vertex:")
                     lines.append(
                         f"P{player.player + 1} {model}: {player.action} ({player.confidence:.0%})"
                     )
+            if human_player:
+                lines.append("Human: arrows move · N interact · M sword · Space wait")
             lines.append("Esc: stop agents and close")
-            for index, line in enumerate(lines[:6]):
+            for index, line in enumerate(lines[:7]):
                 color = (110, 238, 174) if index == 0 else (225, 228, 238)
                 screen.blit(
                     font.render(line, True, color),
@@ -345,6 +442,20 @@ def _run_live(
     if failure:
         raise failure[0]
     return outcome[0]
+
+
+def _human_action_for_key(key: int) -> str | None:
+    return {
+        pygame.K_UP: "move_up",
+        pygame.K_DOWN: "move_down",
+        pygame.K_LEFT: "move_left",
+        pygame.K_RIGHT: "move_right",
+        pygame.K_n: "interact",
+        pygame.K_m: "use_sword",
+        pygame.K_RETURN: "start",
+        pygame.K_RSHIFT: "select",
+        pygame.K_SPACE: "wait",
+    }.get(key)
 
 
 if __name__ == "__main__":

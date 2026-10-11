@@ -202,7 +202,7 @@ uv run python examples/multiplayer_rom.py \
   --screenshot artifacts/mario-kart-linked-lobby.png
 ```
 
-### Four-agent Zelda: Four Swords
+### Zelda: Four Swords team run
 
 The Zelda launcher creates four local save files, selects Four Swords, completes the
 four-system handshake, and visually verifies the heart HUD on every private viewport before
@@ -217,7 +217,7 @@ uv run python examples/zelda_four_swords.py --setup-only \
   --screenshot artifacts/zelda-four-swords-4p-setup.png
 ```
 
-Then run the hybrid four-agent system. A bounded local motor skill unlocks the tutorial,
+Then run the hybrid team system. A bounded local motor skill unlocks the tutorial,
 assembles all four Links on the warp, collects their opening Rupees, and solves Basic
 Training 1's first cooperative switch task. It visually verifies the two revealed reward
 chests before the Vertex agents continue from the solved room. This keeps pixel steering
@@ -234,13 +234,27 @@ uv run python examples/zelda_four_swords.py \
   --screenshot artifacts/zelda-four-swords-4p-agent.png
 ```
 
-Add `--live` to watch the fast lobby route and cooperative puzzle before the model turn. The
-window reports each phase, shows every model's latest action, and remains open after the
-bounded run until Escape. Use `--skip-first-puzzle` only when debugging the raw lobby.
+Add `--live` to watch the fast lobby route and cooperative puzzle before the model turn.
+Live mode defaults to P1 as a human participant and P2-P4 as Vertex agents. Use the arrow
+keys for movement, N for interact, M for sword, and Space to wait. Pass `--human-player 0`
+for four Vertex agents, or `--human-player 2` through `4` to move the keyboard lane. The
+window reports each phase, shows every participant's latest action, and remains open after
+the bounded run until Escape. The deterministic puzzle prelude still controls all four Links;
+human control begins in the decision loop after that verified motor skill. Use
+`--skip-first-puzzle` only when debugging the raw lobby.
 
-`--max-model-calls` is a hard team-wide cost ceiling; a complete four-player turn consumes
-four calls. The run prints per-player actions and token totals plus its Neatlogs trace ID.
-The ROM remains local and gitignored.
+`--max-model-calls` is a hard team-wide cost ceiling; a headless four-agent turn consumes
+four calls, while the default live human-plus-agent turn consumes three. The run prints
+per-player actions and token totals plus its Neatlogs trace ID. The ROM remains local and
+gitignored.
+
+One `four_swords_puzzle_attempt` WORKFLOW trace contains the complete run. Its children show
+the deterministic puzzle CHAIN and visual reward GUARDRAIL, followed by the coordinated
+decision CHAIN. Every AI player has a named AGENT child containing its wrapped Vertex call;
+the human lane is a named TOOL child. The shared controller TOOL records all four actions on
+one clock, and completion GUARDRAIL spans record consensus on every turn. This makes inputs,
+normalized decisions, actions, retries, tokens, and the visible success check inspectable in
+one trace tree instead of four disconnected traces.
 
 ## Autonomous agent
 

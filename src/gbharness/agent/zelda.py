@@ -216,72 +216,142 @@ def solve_first_training_puzzle(
         if result.emulation_ended:
             raise RuntimeError("emulation ended during the first training puzzle")
 
-    with trace.span("solve_first_training_puzzle", "WORKFLOW"):
-        emit("FAST MOTOR SKILL — unlocking the tutorial lobby")
-        one(0, hold("right", 16))
-        one(0, hold("up", 18))
-        one(0, tap("a", hold_frames=3, gap_frames=9))
-        one(0, wait(120))
-        # Rapid taps leave the dialogue half-open and strand Green Link.
-        for _ in range(12):
+    with trace.span(
+        "solve_first_training_puzzle",
+        "CHAIN",
+        attributes={
+            "puzzle.name": "Basic Training 1 outer switches",
+            "puzzle.participants": 4,
+            "motor_skill.source": "local_visual_policy",
+            "runtime.walkthrough_access": False,
+        },
+    ) as puzzle_span:
+        with trace.span(
+            "unlock_tutorial_lobby",
+            "TOOL",
+            attributes={
+                "neatlogs.tool.name": "bounded_controller_sequence",
+                "neatlogs.tool.description": "Advance the lobby dialogue for Green Link",
+                "neatlogs.tool.parameters": "P1: right, up, interact, dialogue confirms",
+            },
+        ):
+            emit("FAST MOTOR SKILL — unlocking the tutorial lobby")
+            one(0, hold("right", 16))
+            one(0, hold("up", 18))
             one(0, tap("a", hold_frames=3, gap_frames=9))
             one(0, wait(120))
+            # Rapid taps leave the dialogue half-open and strand Green Link.
+            for _ in range(12):
+                one(0, tap("a", hold_frames=3, gap_frames=9))
+                one(0, wait(120))
 
-        emit("FAST MOTOR SKILL — assembling all four Links on the warp")
-        approaches = (
-            (0, 0, -24, 18),
-            (1, -16, 24, 18),
-            (2, 48, -24, 48),
-            (3, -48, 24, 48),
-        )
-        for player, centre, side, depth in approaches:
-            if centre:
-                one(player, hold("right" if centre > 0 else "left", abs(centre)))
-            one(player, hold("up", 130))
-            one(player, hold("right" if side > 0 else "left", abs(side)))
-            one(player, hold("down", depth))
+        with trace.span(
+            "assemble_team_on_warp",
+            "TOOL",
+            attributes={
+                "neatlogs.tool.name": "four_player_warp_assembly",
+                "neatlogs.tool.description": "Move all four Links onto the cooperative warp",
+                "neatlogs.tool.parameters": "P1,P2,P3,P4 bounded approach vectors",
+            },
+        ) as warp_span:
+            emit("FAST MOTOR SKILL — assembling all four Links on the warp")
+            approaches = (
+                (0, 0, -24, 18),
+                (1, -16, 24, 18),
+                (2, 48, -24, 48),
+                (3, -48, 24, 48),
+            )
+            for player, centre, side, depth in approaches:
+                if centre:
+                    one(player, hold("right" if centre > 0 else "left", abs(centre)))
+                one(player, hold("up", 130))
+                one(player, hold("right" if side > 0 else "left", abs(side)))
+                one(player, hold("down", depth))
 
-        one(1, hold("up", 15))
-        reference = to_rgb(frames.require()).astype(np.int16)
+            one(1, hold("up", 15))
+            reference = to_rgb(frames.require()).astype(np.int16)
 
-        # Collision at the narrow door makes Purple's final coordinate vary. Sweep
-        # a finite 44x44 box and stop on the visible room transition.
-        one(3, hold("left", 20))
-        one(3, hold("up", 20))
-        sweep_steps = 0
-        entered = False
-        for row in range(11):
-            direction = "right" if row % 2 == 0 else "left"
-            for _column in range(11):
-                one(3, hold(direction, 4))
-                one(0, wait(20))
-                sweep_steps += 1
-                current = to_rgb(frames.require()).astype(np.int16)
-                if float(np.mean(np.abs(current - reference))) > 35:
-                    entered = True
+            # Collision at the narrow door makes Purple's final coordinate vary. Sweep
+            # a finite 44x44 box and stop on the visible room transition.
+            one(3, hold("left", 20))
+            one(3, hold("up", 20))
+            sweep_steps = 0
+            entered = False
+            for row in range(11):
+                direction = "right" if row % 2 == 0 else "left"
+                for _column in range(11):
+                    one(3, hold(direction, 4))
+                    one(0, wait(20))
+                    sweep_steps += 1
+                    current = to_rgb(frames.require()).astype(np.int16)
+                    if float(np.mean(np.abs(current - reference))) > 35:
+                        entered = True
+                        break
+                if entered:
                     break
-            if entered:
-                break
-            one(3, hold("down", 4))
-        if not entered:
-            raise RuntimeError("the four-player tutorial warp did not activate")
+                one(3, hold("down", 4))
+            trace.annotate(warp_span, {"warp.sweep_steps": sweep_steps, "warp.entered": entered})
+            if not entered:
+                raise RuntimeError("the four-player tutorial warp did not activate")
 
-        one(0, wait(500))
-        emit("FAST MOTOR SKILL — collecting four Rupees and regrouping")
-        team({player: hold("down", 120) for player in range(4)})
-        one(0, wait(120))
-        team({1: hold("left", 24), 3: hold("left", 24)})
-        team({1: hold("down", 120), 3: hold("down", 120)})
-        one(0, wait(180))
+        with trace.span(
+            "collect_rupees_and_regroup",
+            "TOOL",
+            attributes={
+                "neatlogs.tool.name": "synchronized_team_movement",
+                "neatlogs.tool.description": "Collect four entry Rupees and regroup",
+                "neatlogs.tool.parameters": "P1,P2,P3,P4 move south; P2,P4 realign",
+            },
+        ):
+            one(0, wait(500))
+            emit("FAST MOTOR SKILL — collecting four Rupees and regrouping")
+            team({player: hold("down", 120) for player in range(4)})
+            one(0, wait(120))
+            team({1: hold("left", 24), 3: hold("left", 24)})
+            team({1: hold("down", 120), 3: hold("down", 120)})
+            one(0, wait(180))
 
-        emit("COOPERATIVE PUZZLE — Green and Purple taking both switches")
-        team({0: hold("left", 16), 3: hold("right", 21)})
-        team({0: hold("down", 55), 3: hold("down", 55)})
-        one(0, wait(300))
+        with trace.span(
+            "activate_outer_switches",
+            "TOOL",
+            attributes={
+                "neatlogs.tool.name": "cooperative_switch_activation",
+                "neatlogs.tool.description": "Place Green and Purple on both outer switches",
+                "neatlogs.tool.parameters": "P1 left/down; P4 right/down; P2,P3 hold",
+            },
+        ):
+            emit("COOPERATIVE PUZZLE — Green and Purple taking both switches")
+            team({0: hold("left", 16), 3: hold("right", 21)})
+            team({0: hold("down", 55), 3: hold("down", 55)})
+            one(0, wait(300))
 
-        visible = first_training_reward_visible(frames.require())
-        if not visible:
-            raise RuntimeError("the first puzzle did not reveal both reward chests")
+        with trace.span(
+            "verify_reward_chests_visible",
+            "GUARDRAIL",
+            attributes={
+                "neatlogs.guardrail.input": "P1 framebuffer reward-chest regions",
+            },
+        ) as verification_span:
+            visible = first_training_reward_visible(frames.require())
+            trace.annotate(
+                verification_span,
+                {
+                    "neatlogs.guardrail.passed": visible,
+                    "neatlogs.guardrail.output": (
+                        "both reward chests visible" if visible else "reward chests absent"
+                    ),
+                },
+            )
+            if not visible:
+                raise RuntimeError("the first puzzle did not reveal both reward chests")
+        trace.annotate(
+            puzzle_span,
+            {
+                "puzzle.completed": visible,
+                "puzzle.frames_advanced": session.frame - started,
+                "puzzle.warp_sweep_steps": sweep_steps,
+            },
+        )
         trace.log(
             "first Four Swords training puzzle solved in {frames} frames; "
             "reward chests are visible",
