@@ -328,6 +328,38 @@ def test_forward_grid_rejects_the_return_portal_marker() -> None:
     assert _forward_marked_target_grid(rgb) is not None
 
 
+def test_reach_warps_preserves_the_scouts_confirmed_probe_target() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    targets = ((70, 40), (120, 40), (70, 88), (120, 88))
+    for x, y in targets[:-1]:
+        rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+        rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+    x, y = targets[-1]
+    rgb[y - 15 : y + 16, x - 15 : x + 16] = (173, 219, 255)
+    rgb[y - 9 : y + 10, x - 9 : x + 10] = (255, 251, 255)
+    rgb[y - 13 : y + 1, x - 4 : x + 5] = (220, 30, 25)
+    packed = (
+        ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+        | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+        | (rgb[:, :, 2].astype(np.uint16) >> 3)
+    )
+    frame = RawFrame(
+        data=packed.astype("<u2").tobytes(),
+        width=240,
+        height=160,
+        pitch=480,
+        index=0,
+    )
+    navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
+
+    plan = navigator("reach_warps", (frame,) * 4)
+
+    assert plan[1] == ("wait",)
+    assert 1 in navigator.forward_grid_players
+    assert 1 not in navigator.leaving_return_players
+    assert navigator.leaving_return_players == {2, 3}
+
+
 def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None:
     navigator = FourSwordsVisualTargetNavigator()
 

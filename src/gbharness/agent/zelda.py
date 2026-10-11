@@ -250,7 +250,11 @@ class FourSwordsVisualTargetNavigator:
 
         if not self.portal_search_started:
             self.portal_search_started = True
-            self.leaving_return_players.update((1, 2, 3))
+            if self.probe_reached:
+                self.forward_grid_players.add(1)
+                self.leaving_return_players.update((2, 3))
+            else:
+                self.leaving_return_players.update((1, 2, 3))
 
         # Each private camera follows its Link near the screen centre. Move up
         # until the complete forward grid is visible. Do not use the return
