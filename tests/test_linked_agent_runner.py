@@ -542,3 +542,46 @@ def test_team_captain_assigns_three_actions_with_one_model_call() -> None:
     assert plan_output["decisions"]["P2"]["decision_reason"] == (
         "Follow the joint plan."
     )
+
+
+def test_visual_motor_steps_reuse_one_team_plan_for_the_stage() -> None:
+    source = HumanActionSource()
+    captain = FakeTeamProvider(stage="reach_npc")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=3, max_model_calls=1),
+        team_provider=captain,
+        visual_plan_override=lambda _stage, _views: {
+            1: ("move_up",),
+            2: ("wait",),
+            3: ("wait",),
+        },
+    )
+
+    result = runner.run()
+
+    assert result.status == "turn_limit"
+    assert result.model_calls == 1
+    assert len(result.turns) == 3
+    assert len(captain.requests) == 1
+    assert [turn.players[1].plan for turn in result.turns] == [
+        ("move_up",),
+        ("move_up",),
+        ("move_up",),
+    ]

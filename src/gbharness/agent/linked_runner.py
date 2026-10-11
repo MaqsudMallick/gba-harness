@@ -131,6 +131,10 @@ class LinkedAgentRunner:
     _team_objective: str = field(default="not assigned", init=False, repr=False)
     _team_stage: str = field(default="reach_npc", init=False, repr=False)
     _dialogue_seen: bool = field(default=False, init=False, repr=False)
+    _cached_team_outcomes: tuple[Decision | BaseException, ...] | None = field(
+        default=None, init=False, repr=False
+    )
+    _cached_team_stage: str = field(default="", init=False, repr=False)
 
     def __post_init__(self) -> None:
         players = self.session.port.players
@@ -193,15 +197,6 @@ class LinkedAgentRunner:
                 if self.stop_event.is_set():
                     status = "stopped"
                     break
-                if calls + model_decisions_per_turn > self.config.max_model_calls:
-                    status = "call_budget"
-                    self.telemetry.log(
-                        "model call budget reached at {calls} calls",
-                        level="warning",
-                        calls=calls,
-                    )
-                    break
-
                 composite = self.frames.require()
                 dialogue_before = (
                     self.dialogue_detector(composite)
@@ -254,12 +249,55 @@ class LinkedAgentRunner:
                     )
                     for assignment in self.assignments
                 )
-                outcomes = self._decide_all(requests, turn, to_png(composite))
-                calls += (
-                    self._team_model_calls
-                    if self.team_provider is not None
-                    else model_decisions_per_turn
+                cached_team_outcomes = self._cached_team_outcomes
+                reuse_team_plan = (
+                    self.team_provider is not None
+                    and self.visual_plan_override is not None
+                    and cached_team_outcomes is not None
+                    and self._cached_team_stage == self._team_stage
                 )
+                calls_needed = 0 if reuse_team_plan else model_decisions_per_turn
+                if calls + calls_needed > self.config.max_model_calls:
+                    status = "call_budget"
+                    self.telemetry.log(
+                        "model call budget reached at {calls} calls",
+                        level="warning",
+                        calls=calls,
+                    )
+                    break
+                if reuse_team_plan:
+                    assert cached_team_outcomes is not None
+                    outcomes = tuple(
+                        Decision(
+                            action="wait",
+                            confidence=1.0,
+                            scene="human_live_control",
+                            note="No human action was requested during the cached team plan.",
+                        )
+                        if assignment.participant_type == "human"
+                        else cached_team_outcomes[index]
+                        for index, assignment in enumerate(self.assignments)
+                    )
+                    self._team_input_tokens = 0
+                    self._team_output_tokens = 0
+                    self._team_model_calls = 0
+                    self.telemetry.log(
+                        "Reused the team plan for stage {stage} on turn {turn}",
+                        stage=self._team_stage,
+                        turn=turn,
+                    )
+                else:
+                    outcomes = self._decide_all(requests, turn, to_png(composite))
+                    calls += (
+                        self._team_model_calls
+                        if self.team_provider is not None
+                        else model_decisions_per_turn
+                    )
+                    if self.team_provider is not None and not any(
+                        isinstance(outcome, BaseException) for outcome in outcomes
+                    ):
+                        self._cached_team_outcomes = outcomes
+                        self._cached_team_stage = self._team_stage
 
                 decisions: list[Decision] = []
                 for assignment, outcome in zip(self.assignments, outcomes, strict=True):
