@@ -249,7 +249,7 @@ class FourSwordsVisualTargetNavigator:
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
-            grid = _forward_target_grid(rgb)
+            grid = _forward_marked_target_grid(rgb)
             if grid is None:
                 plans[player] = _forward_exploration_step(rgb, position)
                 continue
@@ -543,6 +543,18 @@ def _target_grids(
 
 
 def _forward_target_grid(rgb: np.ndarray) -> tuple[tuple[int, int], ...] | None:
+    targets = _merge_target_centres(
+        _orange_target_centres(rgb),
+        _active_target_centres(rgb),
+    )
+    grids = _target_grids(targets)
+    return grids[0] if grids else None
+
+
+def _forward_marked_target_grid(
+    rgb: np.ndarray,
+) -> tuple[tuple[int, int], ...] | None:
+    """Return a portal grid only when its pink forward marker is visible."""
     marker = _pink_npc_position(rgb)
     if marker is None:
         return None
