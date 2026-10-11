@@ -156,6 +156,28 @@ portable across games and multiplayer formats.
 - Verified the fix in hosted trace `1f7240d2a33dd1e334174e91025b1aab`: P1 executed
   `move_left` as `human_live_control` while three Vertex decisions were in progress. The run
   completed two turns and six model calls before the window was closed.
+- Failure reproduced: after the configured agent-turn budget, the viewer displayed
+  `RUN FINISHED` but continued accepting UI events into an unconsumed queue, making every
+  keyboard control appear stuck. The no-prelude diagnostic trace
+  `aa8ea6976a50f8af566a1e18b7d77545` records P1 correctly waiting through five turns before
+  this frozen results state.
+- Fixed: a live human-plus-agent run now enters traced `P1 FREE PLAY` after its agent budget.
+  The worker continues consuming and executing keyboard actions until Escape, so the viewer
+  no longer presents a non-interactive final frame as though it were playable.
+- Failure reproduced: extending the three independent Vertex players to twelve turns spent
+  more calls but did not solve the room. Their scene labels contradicted each other and their
+  actions lacked a shared objective, proving that additional independent button guesses are
+  not an adequate cooperative planner.
+- Completed: replaced independent live decisions with a rotating team-captain provider.
+  Gemini 2.5 Flash, Gemini 2.5 Pro, and Gemini 3 Flash Preview now alternate as captain; one
+  composite visual call returns the joint P2-P4 actions, shared objective, and a concrete P1
+  instruction. Neatlogs records the captain plan, nested wrapped call, each assigned player
+  action, human live inputs, and synchronized execution under the same root trace. This cuts
+  the live planning cost from three calls per turn to one.
+- Evaluation finding: the first six-plan captain run produced consistent shared scene labels
+  and identified the Chambers of Insight pressure-plate puzzle, but it did not yet prove a
+  room clear and often assigned the same action to all AI players. Multi-step spatial plans
+  and a verified progress evaluator remain necessary before claiming autonomous completion.
 
 ## Demo
 

@@ -39,7 +39,9 @@ from gbharness.agent.multiplayer import (
 from gbharness.agent.openai_questions import QUESTIONS
 from gbharness.agent.policy import ACTION_DESCRIPTIONS, ACTIONS, resolve
 from gbharness.agent.runner import AgentRunner, EpisodeResult, RunnerConfig, TurnRecord
+from gbharness.agent.team import TeamDecision, TeamDecisionProvider, TeamDecisionRequest
 from gbharness.agent.vertex import VertexDecisionProvider
+from gbharness.agent.vertex_team import VertexTeamDecisionProvider
 from gbharness.agent.zelda import (
     FOUR_SWORDS_POLICY,
     FOUR_SWORDS_ROLES,
@@ -85,8 +87,12 @@ __all__ = [
     "RunnerConfig",
     "TurnRecord",
     "TrackProfile",
+    "TeamDecision",
+    "TeamDecisionProvider",
+    "TeamDecisionRequest",
     "Verdict",
     "VertexDecisionProvider",
+    "VertexTeamDecisionProvider",
     "AutonomousPlayer",
     "PlayerDecision",
     "PlayerAssignment",

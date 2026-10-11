@@ -27,6 +27,7 @@ from gbharness.agent import (
     LinkedTurnRecord,
     PlayerAssignment,
     VertexDecisionProvider,
+    VertexTeamDecisionProvider,
     bootstrap_four_swords,
     solve_first_training_puzzle,
 )
@@ -50,7 +51,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--rom", type=Path, default=DEFAULT_ROM)
     result.add_argument("--core", type=Path, help="mGBA Splitscreen libretro core")
-    result.add_argument("--max-turns", type=int, default=5)
+    result.add_argument("--max-turns", type=int, default=12)
     result.add_argument(
         "--max-consecutive-errors",
         type=int,
@@ -60,8 +61,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--max-model-calls",
         type=int,
-        default=20,
-        help="hard team-wide ceiling; each AI player costs one call per turn",
+        default=12,
+        help="hard ceiling; coordinated human mode costs one rotating-captain call per turn",
     )
     result.add_argument(
         "--models",
@@ -172,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             ) as telemetry:
                 human_actions = HumanActionSource() if human_player else None
                 assignments: list[PlayerAssignment] = []
+                ai_providers: list[VertexDecisionProvider] = []
                 for player, (model, role) in enumerate(zip(models, FOUR_SWORDS_ROLES, strict=True)):
                     if human_actions is not None and player == human_player - 1:
                         assignments.append(
@@ -183,6 +185,21 @@ def main(argv: list[str] | None = None) -> int:
                             )
                         )
                         continue
+                    if human_player:
+                        role = {
+                            1: (
+                                "Red Link AI route captain: identify the shared obstacle, "
+                                "select a team mechanic, and give P1 one explicit instruction."
+                            ),
+                            2: (
+                                "Blue Link AI mechanics specialist: test attack/interact when "
+                                "movement is blocked and tell P1 how to complement it."
+                            ),
+                            3: (
+                                "Purple Link AI switch specialist: seek a distinct pressure "
+                                "plate or flank route and tell P1 which position to hold."
+                            ),
+                        }.get(player, role)
                     vertex = VertexDecisionProvider(
                         project=project,
                         location=settings.google_cloud_location,
@@ -196,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                             role=role,
                         )
                     )
+                    ai_providers.append(provider)
                     assignments.append(PlayerAssignment(player, role, provider))
 
                 runner = LinkedAgentRunner(
@@ -208,6 +226,9 @@ def main(argv: list[str] | None = None) -> int:
                         max_model_calls=args.max_model_calls,
                         confidence_threshold=settings.confidence_threshold,
                         max_consecutive_errors=args.max_consecutive_errors,
+                    ),
+                    team_provider=(
+                        VertexTeamDecisionProvider(tuple(ai_providers)) if human_player else None
                     ),
                     telemetry=telemetry,
                     on_turn=_print_turn if args.log_turns else None,
@@ -235,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 def run_attempt(
                     on_phase: Callable[[str], None] | None = None,
+                    after_episode: Callable[[LinkedEpisodeResult], None] | None = None,
                 ) -> LinkedEpisodeResult:
                     with telemetry.span(
                         "four_swords_puzzle_attempt",
@@ -267,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
                                     else "PUZZLE 1 SOLVED — four agents choosing next actions"
                                 )
                         episode = runner.run()
+                        if after_episode is not None:
+                            after_episode(episode)
                         telemetry.annotate(
                             root_span,
                             {
@@ -336,7 +360,10 @@ def _run_live(
     latch: FrameLatch,
     scale: int,
     *,
-    run_attempt: Callable[[Callable[[str], None] | None], LinkedEpisodeResult],
+    run_attempt: Callable[
+        [Callable[[str], None] | None, Callable[[LinkedEpisodeResult], None] | None],
+        LinkedEpisodeResult,
+    ],
     includes_prelude: bool,
     human_actions: HumanActionSource | None,
     human_player: int,
@@ -347,7 +374,7 @@ def _run_live(
     frame = latch.require()
     native_size = (frame.width, frame.height)
     game_size = (frame.width * scale, frame.height * scale)
-    panel_height = 146
+    panel_height = 174
     screen = pygame.display.set_mode((game_size[0], game_size[1] + panel_height))
     pygame.display.set_caption(
         "gbharness — ZELDA FOUR SWORDS — "
@@ -372,9 +399,58 @@ def _run_live(
 
     runner.on_turn = update
 
+    def keep_human_active(_episode: LinkedEpisodeResult) -> None:
+        if human_actions is None or not human_player:
+            return
+        phase[0] = f"AGENTS FINISHED — P{human_player} FREE PLAY ACTIVE"
+        runner.telemetry.log(
+            "Agent turn budget finished; P{player} human free play remains active",
+            player=human_player,
+        )
+        action_count = 0
+        while not runner.stop_event.is_set():
+            action = human_actions.poll_action(timeout=0.05)
+            if runner.stop_event.is_set():
+                break
+            if action is None or action not in runner.policy.actions:
+                continue
+            with runner.telemetry.span(
+                f"player_{human_player}_free_play_action",
+                "TOOL",
+                attributes={
+                    "neatlogs.tool.name": "human_keyboard_controller",
+                    "neatlogs.tool.description": (
+                        "Execute human free play after the bounded agent episode"
+                    ),
+                    "neatlogs.tool.parameters": action,
+                    "player.number": human_player,
+                    "free_play.action_index": action_count + 1,
+                    "frame.before": runner.session.frame,
+                },
+            ) as action_span:
+                result = runner.session.submit({human_player - 1: runner.policy.resolve(action)})
+                action_count += 1
+                runner.telemetry.annotate(
+                    action_span,
+                    {
+                        "frame.after": result.total_frames,
+                        "frames.advanced": result.frames_advanced,
+                        "emulation.ended": result.emulation_ended,
+                    },
+                )
+            phase[0] = f"P{human_player} FREE PLAY — {action}"
+            if result.emulation_ended:
+                runner.stop_event.set()
+                break
+
     def work() -> None:
         try:
-            outcome.append(run_attempt(lambda message: phase.__setitem__(0, message)))
+            outcome.append(
+                run_attempt(
+                    lambda message: phase.__setitem__(0, message),
+                    keep_human_active,
+                )
+            )
             phase[0] = "PUZZLE 1 SOLVED — run trace finalized"
         except BaseException as exc:
             failure.append(exc)
@@ -421,10 +497,20 @@ def _run_live(
                     lines.append(
                         f"P{player.player + 1} {model}: {player.action} ({player.confidence:.0%})"
                     )
+                advice = record.team_instruction or next(
+                    (
+                        player.note
+                        for player in record.players
+                        if not player.provider.startswith("human:") and player.note
+                    ),
+                    "",
+                )
+                if advice:
+                    lines.append(f"TEAM ADVICE: {advice[:105]}")
             if human_player:
                 lines.append("Human: arrows/WASD move · N/F interact · M/G sword · Space wait")
             lines.append("Esc: stop agents and close")
-            for index, line in enumerate(lines[:7]):
+            for index, line in enumerate(lines[:8]):
                 color = (110, 238, 174) if index == 0 else (225, 228, 238)
                 screen.blit(
                     font.render(line, True, color),

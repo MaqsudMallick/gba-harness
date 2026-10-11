@@ -6,13 +6,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import cast
 
+import numpy as np
+
 from gbharness.agent.contracts import Decision, DecisionRequest
 from gbharness.agent.human import HumanActionSource, HumanDecisionProvider
 from gbharness.agent.linked_runner import (
     LinkedAgentRunner,
     LinkedRunnerConfig,
     PlayerAssignment,
+    _meaningful_visual_change,
 )
+from gbharness.agent.team import TeamDecision, TeamDecisionRequest
 from gbharness.agent.zelda import FOUR_SWORDS_POLICY
 from gbharness.buttons import Button
 from gbharness.multiplayer import LinkedSession
@@ -90,6 +94,28 @@ class WaitForHumanProvider:
         if not self.human_moved.wait(timeout=1):
             raise TimeoutError("human action was not executed during agent reasoning")
         return Decision("wait", 1.0, "room")
+
+
+class FakeTeamProvider:
+    name = "rotating-captain"
+
+    def __init__(self) -> None:
+        self.requests: list[TeamDecisionRequest] = []
+
+    def decide_team(self, request: TeamDecisionRequest) -> TeamDecision:
+        self.requests.append(request)
+        actions = ("move_left", "interact", "move_right")
+        return TeamDecision(
+            decisions={
+                player: Decision(action, 0.9, "shared puzzle", note="Follow the joint plan.")
+                for player, action in zip(request.ai_players, actions, strict=True)
+            },
+            human_instruction="P1 hold the left switch.",
+            objective="occupy both switches",
+            captain="vertex:captain",
+            input_tokens=100,
+            output_tokens=20,
+        )
 
 
 @dataclass
@@ -289,3 +315,74 @@ def test_live_human_action_executes_while_agents_are_reasoning() -> None:
     assert port.human_moved.is_set()
     assert result.model_calls == 3
     assert result.turns[0].players[0].action == "move_up"
+
+
+def test_perceptual_stuck_detector_ignores_small_animation_but_detects_movement() -> None:
+    previous = np.zeros((160, 240, 3), dtype=np.uint8)
+    small_animation = previous.copy()
+    small_animation[20:25, 20:25] = 255
+    moved_sprite = previous.copy()
+    moved_sprite[40:90, 40:90] = 255
+
+    assert not _meaningful_visual_change(previous, small_animation)
+    assert _meaningful_visual_change(previous, moved_sprite)
+
+
+def test_blocked_repeated_movement_escalates_recovery_actions() -> None:
+    repeated_move = [Decision("move_down", 1.0, "blocked") for _ in range(3)]
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assignments([repeated_move.copy() for _ in range(4)]),
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=3, max_model_calls=12),
+    )
+
+    result = runner.run()
+
+    assert [turn.players[0].action for turn in result.turns] == [
+        "move_down",
+        "attack_down",
+        "interact",
+    ]
+
+
+def test_team_captain_assigns_three_actions_with_one_model_call() -> None:
+    source = HumanActionSource()
+    captain = FakeTeamProvider()
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=1, max_model_calls=1),
+        team_provider=captain,
+    )
+
+    result = runner.run()
+
+    assert result.model_calls == 1
+    assert result.input_tokens == 100
+    assert result.output_tokens == 20
+    assert [player.action for player in result.turns[0].players] == [
+        "wait",
+        "move_left",
+        "interact",
+        "move_right",
+    ]
+    assert result.turns[0].team_instruction == "P1 hold the left switch."
+    assert result.turns[0].captain == "vertex:captain"
+    assert captain.requests[0].ai_players == (1, 2, 3)
