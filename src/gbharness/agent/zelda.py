@@ -255,11 +255,10 @@ class FourSwordsVisualTargetNavigator:
         # Each private camera follows its Link near the screen centre. Move up
         # until the complete forward grid is visible. Do not use the return
         # grid below the starting position.
-        target_slots = {1: 3, 2: 0, 3: 2}
+        preferred_slots = {1: 3, 2: 0, 3: 2}
         plans: dict[int, tuple[str, ...]] = {}
         for player in (1, 2, 3):
             grid: tuple[tuple[int, int], ...] | None = None
-            self.assignments.setdefault(player, target_slots[player])
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
@@ -305,13 +304,15 @@ class FourSwordsVisualTargetNavigator:
                 self.active_frames.pop(player, None)
             if grid is None:
                 previous_target = self.tracked_targets.get(player)
+                assigned_slot = self.assignments.get(player)
                 partial_target = (
                     _partial_portal_target(
                         rgb,
-                        self.assignments[player],
+                        assigned_slot,
                         previous_target,
                     )
-                    if previous_target is not None or self.reached_players
+                    if assigned_slot is not None
+                    and (previous_target is not None or self.reached_players)
                     else None
                 )
                 if partial_target is not None:
@@ -330,7 +331,17 @@ class FourSwordsVisualTargetNavigator:
                 plans[player] = _forward_exploration_step(rgb, position)
                 continue
             self.leaving_return_players.discard(player)
-            target = grid[self.assignments[player]]
+            slot = self.assignments.get(player)
+            if slot is None:
+                slot = _empty_target_slot(
+                    grid,
+                    active_targets,
+                    position,
+                    set(self.assignments.values()),
+                    preferred_slots[player],
+                )
+                self.assignments[player] = slot
+            target = grid[slot]
             active_now = any(
                 _squared_distance(position, active) <= 12 * 12
                 and _squared_distance(target, active) <= 12 * 12
@@ -662,6 +673,41 @@ def _order_target_grid(
     upper = sorted(vertical[:2], key=lambda point: point[0])
     lower = sorted(vertical[2:], key=lambda point: point[0])
     return tuple((*upper, *lower))
+
+
+def _empty_target_slot(
+    grid: tuple[tuple[int, int], ...],
+    active_targets: tuple[tuple[int, int], ...],
+    position: tuple[int, int],
+    reserved_slots: set[int],
+    preferred_slot: int,
+) -> int:
+    """Select one unoccupied and unreserved circle for one bot."""
+    active_slots = {
+        slot
+        for slot, target in enumerate(grid)
+        if any(_squared_distance(target, active) <= 12 * 12 for active in active_targets)
+    }
+    own_slot = min(range(len(grid)), key=lambda slot: _squared_distance(position, grid[slot]))
+    if (
+        own_slot in active_slots
+        and own_slot not in reserved_slots
+        and _squared_distance(position, grid[own_slot]) <= 14 * 14
+    ):
+        return own_slot
+
+    available = [
+        slot
+        for slot in range(len(grid))
+        if slot not in active_slots and slot not in reserved_slots
+    ]
+    if preferred_slot in available:
+        return preferred_slot
+    if not available:
+        available = [slot for slot in range(len(grid)) if slot not in reserved_slots]
+    if not available:
+        available = list(range(len(grid)))
+    return min(available, key=lambda slot: _squared_distance(position, grid[slot]))
 
 
 def _target_grids(

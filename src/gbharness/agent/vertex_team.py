@@ -173,13 +173,25 @@ class VertexTeamDecisionProvider:
             if request.stage == "explore_room":
                 stage_instructions = (
                     "Current stage: explore_room. Inspect only the current visible room. "
-                    "Identify its immediate cooperative obstacle. Give P2, P3, and P4 "
-                    "short screen-relative plans. Keep stage=explore_room. P1 is human. "
+                    "Maintain a short visual map in objective. Record each bot's relative "
+                    "area, the entrance, visible openings, NPCs, obstacles, and candidate "
+                    "targets. Preserve confirmed map facts from the shared state. Identify "
+                    "the immediate cooperative obstacle. Give P2, P3, and P4 short "
+                    "screen-relative plans. Keep stage=explore_room. P1 is human. "
                     "Give no automated P1 plan. Set terminal=true only when the screenshot "
                     "shows that the room objective is complete. Do not use a walkthrough. "
-                    "Do not return through the entrance portal. Move toward the room "
-                    "interior. Use sword or directional attack actions only when a visible "
-                    "enemy or breakable obstacle blocks progress."
+                    "A two-by-two group of four large circles with a centre character or "
+                    "symbol is a warp grid, not a pressure-plate puzzle. Do not return "
+                    "through the entrance portal. If the route is uncertain, choose one AI "
+                    "Link as the scout. Keep the other two AI Links still. Move another bot "
+                    "only after the scout confirms an opening, NPC, obstacle, or target. "
+                    "Keep visible teammates in the same mapped area. If a pink guide is "
+                    "visible, approach it with the scout, interact, read every visible "
+                    "dialogue page, and preserve its instruction in objective. If one move "
+                    "direction repeats without visual progress, do not repeat it. Choose a "
+                    "perpendicular escape direction from the visible free space. Use sword "
+                    "or directional attack actions only when a visible enemy or breakable "
+                    "obstacle blocks progress."
                 )
             else:
                 stage_instructions = (
