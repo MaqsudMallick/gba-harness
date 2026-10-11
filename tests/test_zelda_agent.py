@@ -292,6 +292,7 @@ def test_visual_target_navigator_faces_npc_and_recovers_from_failed_dialogue() -
         )
 
     views = (frame(rgb),) * 4
+    assert navigator("reach_npc", views) == {1: ("wait",)}
     assert navigator("advance_dialogue", views)[1][0] == "face_up"
     navigator("advance_dialogue", views)
     assert navigator("advance_dialogue", views)[1][:3] == (

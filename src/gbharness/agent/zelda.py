@@ -208,6 +208,8 @@ class FourSwordsVisualTargetNavigator:
         stage: str,
         views: tuple[RawFrame, ...],
     ) -> dict[int, tuple[str, ...]]:
+        if stage == "reach_npc":
+            return self._reach_npc_plan(views)
         if stage == "probe_target":
             return self._probe_plan(views)
         if stage == "advance_dialogue":
@@ -260,6 +262,19 @@ class FourSwordsVisualTargetNavigator:
             self.tracked_targets[player] = target
             plans[player] = _precision_route_step(position, target)
         return plans
+
+    def _reach_npc_plan(
+        self,
+        views: tuple[RawFrame, ...],
+    ) -> dict[int, tuple[str, ...]]:
+        if len(views) < 2:
+            return {}
+        offset = _pink_npc_offset(to_rgb(views[1]))
+        if offset is None:
+            return {1: ("move_up",)}
+        if _squared_distance((0, 0), offset) <= 30 * 30:
+            return {1: ("wait",)}
+        return {1: _precision_route_step((0, 0), offset)}
 
     def _probe_plan(
         self,
