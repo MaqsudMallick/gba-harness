@@ -1,8 +1,8 @@
-"""The action space, and the questions that choose from it.
+"""The starter Super Mario action space.
 
 A Game Boy Advance agent needs no tool calling. The action space is ten buttons and a few
-durations -- small, discrete, enumerable -- so choosing from it is classification, which is
-exactly what the Decisions API does (PLAN-agent-layer.md §0).
+durations: small, discrete, and enumerable. Model-specific schemas live in their provider
+adapters; this game policy only owns what each action means.
 
 The model picks a *key*; this module owns what that key does. No model output is ever
 interpreted as code or as free-form arguments, which removes a whole class of failure that
@@ -11,7 +11,7 @@ tool-calling designs have to guard against.
 
 from __future__ import annotations
 
-from typing import Any, Final
+from typing import Final
 
 from gbharness.actions import Action, hold, tap, wait
 
@@ -34,7 +34,7 @@ ACTIONS: Final[dict[str, Action]] = {
     "wait": wait(24),
 }
 
-_DESCRIPTIONS: Final[dict[str, str]] = {
+ACTION_DESCRIPTIONS: Final[dict[str, str]] = {
     "jump": "Jump straight up on the spot.",
     "jump_right": "Jump while moving right — use to clear a gap, a pipe, or an enemy ahead.",
     "jump_left": "Jump while moving left.",
@@ -48,48 +48,6 @@ _DESCRIPTIONS: Final[dict[str, str]] = {
     "select": "Press Select — changes the highlighted option on a menu.",
     "wait": "Do nothing for a moment. Use while an animation, cutscene or death plays out.",
 }
-
-ACTION_QUESTION: Final[dict[str, Any]] = {
-    "type": "choice",
-    "name": "action",
-    "instructions": (
-        "The image is the current screen of a Game Boy Advance game: Super Mario Bros. "
-        "Choose the single best next input to make progress. "
-        "Mario moves right through the level toward a flagpole. Jump over gaps, pipes and "
-        "enemies; falling into a gap kills him. If a title screen or menu is showing, "
-        "press Start to begin. If an animation or death is playing, wait."
-    ),
-    "choices": [{"value": k, "description": v} for k, v in _DESCRIPTIONS.items()],
-}
-
-SCREEN_QUESTION: Final[dict[str, Any]] = {
-    "type": "choice",
-    "name": "screen_kind",
-    "instructions": "What kind of screen is showing?",
-    "choices": [
-        {"value": "title", "description": "A title or attract screen before play begins."},
-        {"value": "menu", "description": "A menu with selectable options."},
-        {"value": "gameplay", "description": "Active play: Mario is on screen in a level."},
-        {"value": "cutscene", "description": "A transition, score tally, or 'World 1-1' card."},
-        {"value": "game_over", "description": "Mario has died or the game is over."},
-    ],
-}
-
-WAITING_QUESTION: Final[dict[str, Any]] = {
-    "type": "predicate",
-    "name": "waiting_for_input",
-    "instructions": (
-        "Is the game idle and waiting for a button press, as opposed to an animation or "
-        "movement being in progress?"
-    ),
-}
-
-QUESTIONS: Final[list[dict[str, Any]]] = [
-    ACTION_QUESTION,
-    SCREEN_QUESTION,
-    WAITING_QUESTION,
-]
-
 
 def resolve(choice: str) -> Action:
     """Map a chosen value to an input-layer action.

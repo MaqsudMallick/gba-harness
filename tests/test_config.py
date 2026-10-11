@@ -7,16 +7,26 @@ from pathlib import Path
 import pytest
 
 from gbharness.config import (
+    DEFAULT_AGENT_PROVIDER,
     DEFAULT_CONFIDENCE_THRESHOLD,
     DEFAULT_DECISION_MODEL,
     DEFAULT_ESCALATION_MODEL,
+    DEFAULT_NEATLOGS_ENDPOINT,
+    DEFAULT_VERTEX_LOCATION,
+    DEFAULT_VERTEX_MODEL,
     MissingSecret,
     Settings,
     load_settings,
 )
 
 ENV_VARS = (
+    "NEATLOGS_API_KEY",
+    "NEATLOGS_ENDPOINT",
     "OPENAI_API_KEY",
+    "GBHARNESS_AGENT_PROVIDER",
+    "GBHARNESS_VERTEX_MODEL",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
     "GBHARNESS_DECISION_MODEL",
     "GBHARNESS_ESCALATION_MODEL",
     "GBHARNESS_CONFIDENCE_THRESHOLD",
@@ -39,6 +49,11 @@ def clean_env(monkeypatch, tmp_path):
 def test_defaults_when_nothing_is_set(clean_env):
     settings = load_settings()
     assert settings.openai_api_key is None
+    assert settings.neatlogs_api_key is None
+    assert settings.neatlogs_endpoint == DEFAULT_NEATLOGS_ENDPOINT
+    assert settings.agent_provider == DEFAULT_AGENT_PROVIDER
+    assert settings.vertex_model == DEFAULT_VERTEX_MODEL
+    assert settings.google_cloud_location == DEFAULT_VERTEX_LOCATION
     assert settings.decision_model == DEFAULT_DECISION_MODEL
     assert settings.escalation_model == DEFAULT_ESCALATION_MODEL
     assert settings.confidence_threshold == DEFAULT_CONFIDENCE_THRESHOLD
@@ -59,6 +74,24 @@ def test_the_missing_key_error_names_the_fix(clean_env):
     message = str(exc.value)
     assert ".env.example" in message and ".env" in message
     assert "gitignored" in message
+
+
+def test_vertex_and_neatlogs_require_explicit_configuration(clean_env):
+    settings = load_settings()
+    with pytest.raises(MissingSecret, match="NEATLOGS_API_KEY"):
+        settings.require_neatlogs_key()
+    with pytest.raises(MissingSecret, match="GOOGLE_CLOUD_PROJECT"):
+        settings.require_vertex_project()
+
+
+def test_vertex_configuration_is_loaded(clean_env, monkeypatch):
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "game-agents")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    monkeypatch.setenv("GBHARNESS_VERTEX_MODEL", "gemini-test")
+    settings = load_settings()
+    assert settings.require_vertex_project() == "game-agents"
+    assert settings.google_cloud_location == "us-central1"
+    assert settings.vertex_model == "gemini-test"
 
 
 def test_dotenv_file_is_loaded(clean_env):
@@ -151,9 +184,13 @@ def test_repr_shows_the_models_in_use():
 
 
 def test_repr_redacts_the_key():
-    settings = Settings(openai_api_key="sk-super-secret-value")
+    settings = Settings(
+        openai_api_key="sk-super-secret-value",
+        neatlogs_api_key="nl-super-secret-value",
+    )
     assert "sk-super-secret-value" not in repr(settings)
-    assert "<set>" in repr(settings)
+    assert "nl-super-secret-value" not in repr(settings)
+    assert repr(settings).count("<set>") == 2
 
 
 def test_repr_says_unset_when_there_is_no_key():
@@ -173,3 +210,4 @@ def test_the_key_does_not_leak_through_a_traceback(clean_env, monkeypatch):
 def test_dataclass_field_is_excluded_from_repr():
     # Belt and braces: even if __repr__ were removed, the field is repr=False.
     assert Settings.__dataclass_fields__["openai_api_key"].repr is False
+    assert Settings.__dataclass_fields__["neatlogs_api_key"].repr is False

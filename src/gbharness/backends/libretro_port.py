@@ -75,7 +75,11 @@ _BUTTON_BY_ID: Final[dict[int, Button]] = {v: k for k, v in JOYPAD_ID.items()}
 SCREEN_WIDTH: Final = 240
 SCREEN_HEIGHT: Final = 160
 
-_CORE_NAMES: Final = ("mgba_libretro.so",)
+_CORE_NAMES: Final = (
+    "mgba_libretro.so",
+    "mgba_libretro.dylib",
+    "mgba_libretro.dll",
+)
 
 #: Where `scripts/fetch-core.sh` puts the core, relative to the project root.
 VENDOR_SUBDIR: Final = Path("vendor") / "libretro"
@@ -85,6 +89,8 @@ _SYSTEM_CORE_DIRS: Final = (
     "/usr/lib/libretro",
     "/usr/local/lib/libretro",
     os.path.expanduser("~/.config/retroarch/cores"),
+    "/Applications/RetroArch.app/Contents/Resources/cores",
+    os.path.expanduser("~/Library/Application Support/RetroArch/cores"),
 )
 
 
@@ -170,7 +176,7 @@ class _GameInfo(ctypes.Structure):
 
 
 def find_core(explicit: str | Path | None = None) -> Path:
-    """Locate `mgba_libretro.so`.
+    """Locate the platform's mGBA libretro core.
 
     Search order: the `explicit` argument, then ``$GBHARNESS_LIBRETRO_CORE``, then the
     project's own ``vendor/libretro/`` (see `_vendor_dirs`), then the system core
@@ -196,8 +202,8 @@ def find_core(explicit: str | Path | None = None) -> Path:
         if path.is_file():
             return path
     raise CoreNotFound(
-        "could not find mgba_libretro.so. Get one with any of:\n"
-        "  ./scripts/fetch-core.sh            (downloads into vendor/, no root needed)\n"
+        "could not find an mGBA libretro core. Get one with any of:\n"
+        "  ./scripts/fetch-core.sh            (macOS/Linux, downloads into vendor/)\n"
         "  sudo apt install libretro-mgba     (Debian/Ubuntu, system-wide)\n"
         "  export GBHARNESS_LIBRETRO_CORE=... (point at an existing core)"
     )

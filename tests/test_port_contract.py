@@ -309,6 +309,16 @@ def test_vendor_dir_is_found_from_a_subdirectory(tmp_path, monkeypatch):
     assert find_core() == vendor / "mgba_libretro.so"
 
 
+def test_macos_vendor_core_is_discovered(tmp_path, monkeypatch):
+    vendor = tmp_path / "vendor" / "libretro"
+    vendor.mkdir(parents=True)
+    core = vendor / "mgba_libretro.dylib"
+    core.write_bytes(b"not really Mach-O")
+    monkeypatch.delenv("GBHARNESS_LIBRETRO_CORE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert find_core() == core
+
+
 def test_explicit_path_wins_over_everything(tmp_path, libretro_core):
     assert find_core(libretro_core) == Path(libretro_core)
 

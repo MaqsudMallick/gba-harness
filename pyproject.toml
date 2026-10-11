@@ -12,8 +12,17 @@ requires-python = ">=3.13"
 dependencies = ["python-dotenv>=1.2"]
 
 [project.optional-dependencies]
-vision = ["pillow>=12", "numpy>=2.5"]
-agent = ["openai>=3.28"]
+vision = [
+    "pillow>=12",
+    "numpy>=2.5",
+    "pygame-ce>=2.5",
+]
+agent = [
+    "google-genai>=1.0",
+    "neatlogs[vertex-ai]>=0.1",
+    # Keep the OpenAI adapter available while Vertex AI becomes the default provider.
+    "openai>=3.28",
+]
 
 [dependency-groups]
 dev = [

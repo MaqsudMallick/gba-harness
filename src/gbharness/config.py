@@ -31,6 +31,13 @@ DEFAULT_ESCALATION_MODEL: Final = "gpt-6.1-sol"
 #: Below this confidence on the action question, stop and escalate rather than act.
 DEFAULT_CONFIDENCE_THRESHOLD: Final = 0.70
 
+#: The provider-neutral runner defaults to Vertex AI. The OpenAI Decisions adapter stays
+#: available for A/B tests, but selecting it is an explicit configuration choice.
+DEFAULT_AGENT_PROVIDER: Final = "vertex"
+DEFAULT_VERTEX_MODEL: Final = "gemini-2.5-flash"
+DEFAULT_VERTEX_LOCATION: Final = "global"
+DEFAULT_NEATLOGS_ENDPOINT: Final = "https://ingest.neatlogs.com"
+
 
 class MissingSecret(RuntimeError):
     """A required secret is not set."""
@@ -54,7 +61,13 @@ class Settings:
         dotenv_path: which `.env` was loaded, if any. For diagnostics.
     """
 
+    neatlogs_api_key: str | None = field(repr=False, default=None)
+    neatlogs_endpoint: str = DEFAULT_NEATLOGS_ENDPOINT
     openai_api_key: str | None = field(repr=False, default=None)
+    agent_provider: str = DEFAULT_AGENT_PROVIDER
+    vertex_model: str = DEFAULT_VERTEX_MODEL
+    google_cloud_project: str | None = None
+    google_cloud_location: str = DEFAULT_VERTEX_LOCATION
     decision_model: str = DEFAULT_DECISION_MODEL
     escalation_model: str | None = DEFAULT_ESCALATION_MODEL
     confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
@@ -66,9 +79,16 @@ class Settings:
 
     def __repr__(self) -> str:
         """Redacted. A config object ends up in logs and tracebacks; a key must not."""
-        key = "set" if self.openai_api_key else "unset"
+        openai_key = "set" if self.openai_api_key else "unset"
+        neatlogs_key = "set" if self.neatlogs_api_key else "unset"
         return (
-            f"Settings(openai_api_key=<{key}>, decision_model={self.decision_model!r}, "
+            f"Settings(neatlogs_api_key=<{neatlogs_key}>, "
+            f"neatlogs_endpoint={self.neatlogs_endpoint!r}, "
+            f"openai_api_key=<{openai_key}>, agent_provider={self.agent_provider!r}, "
+            f"vertex_model={self.vertex_model!r}, "
+            f"google_cloud_project={self.google_cloud_project!r}, "
+            f"google_cloud_location={self.google_cloud_location!r}, "
+            f"decision_model={self.decision_model!r}, "
             f"escalation_model={self.escalation_model!r}, "
             f"confidence_threshold={self.confidence_threshold}, "
             f"rom_path={self.rom_path!r}, "
@@ -88,6 +108,25 @@ class Settings:
                 "(.env is gitignored; never commit a key.)"
             )
         return self.openai_api_key
+
+    def require_neatlogs_key(self) -> str:
+        """The project tracing key, or a setup instruction safe for logs."""
+        if not self.neatlogs_api_key:
+            raise MissingSecret(
+                "NEATLOGS_API_KEY is not set. Create/select the project at "
+                "https://app.neatlogs.com, copy Settings -> API Keys into .env, and "
+                "never commit the key."
+            )
+        return self.neatlogs_api_key
+
+    def require_vertex_project(self) -> str:
+        """The Google Cloud project used by Vertex AI."""
+        if not self.google_cloud_project:
+            raise MissingSecret(
+                "GOOGLE_CLOUD_PROJECT is not set. Add the Vertex AI project id to .env "
+                "and authenticate with Application Default Credentials."
+            )
+        return self.google_cloud_project
 
 
 def _opt_int(name: str, default: int) -> int:
@@ -144,7 +183,15 @@ def load_settings(*, dotenv_path: str | Path | None = None, override: bool = Fal
     if found:
         load_dotenv(found, override=override)
     return Settings(
+        neatlogs_api_key=os.environ.get("NEATLOGS_API_KEY") or None,
+        neatlogs_endpoint=os.environ.get("NEATLOGS_ENDPOINT") or DEFAULT_NEATLOGS_ENDPOINT,
         openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
+        agent_provider=os.environ.get("GBHARNESS_AGENT_PROVIDER") or DEFAULT_AGENT_PROVIDER,
+        vertex_model=os.environ.get("GBHARNESS_VERTEX_MODEL") or DEFAULT_VERTEX_MODEL,
+        google_cloud_project=os.environ.get("GOOGLE_CLOUD_PROJECT") or None,
+        google_cloud_location=(
+            os.environ.get("GOOGLE_CLOUD_LOCATION") or DEFAULT_VERTEX_LOCATION
+        ),
         decision_model=os.environ.get("GBHARNESS_DECISION_MODEL") or DEFAULT_DECISION_MODEL,
         escalation_model=_opt_model("GBHARNESS_ESCALATION_MODEL", DEFAULT_ESCALATION_MODEL),
         confidence_threshold=_opt_float(
@@ -169,19 +216,15 @@ def _main() -> int:
     print(f"loaded from   {source}")
     print(f"settings      {settings!r}")
     print()
-    print(f"decisions     {settings.decision_model}  (input-only billing, ~10x faster)")
-    if settings.escalation_model:
-        print(f"escalation    {settings.escalation_model}  "
-              f"(only below confidence {settings.confidence_threshold})")
-    else:
-        print("escalation    disabled — Decisions-only run")
+    print(f"provider      {settings.agent_provider}")
+    print(f"vertex        {settings.vertex_model} in {settings.google_cloud_location}")
+    if settings.agent_provider == "openai":
+        print(f"decisions     {settings.decision_model}")
+        print(f"escalation    {settings.escalation_model or 'disabled'}")
     print()
-    if settings.openai_api_key:
-        key = settings.openai_api_key
-        print(f"OPENAI_API_KEY  set, {len(key)} chars, ends …{key[-4:]}")
-    else:
-        print("OPENAI_API_KEY  NOT SET — the agent layer will refuse to start.")
-        print("                cp .env.example .env, then add your key.")
+    print(f"NEATLOGS_API_KEY  {'set' if settings.neatlogs_api_key else 'NOT SET'}")
+    print(f"OPENAI_API_KEY    {'set' if settings.openai_api_key else 'NOT SET (optional)'}")
+    print(f"GOOGLE_CLOUD_PROJECT  {settings.google_cloud_project or 'NOT SET'}")
     return 0
 
 
