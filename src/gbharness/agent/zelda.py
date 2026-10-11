@@ -440,6 +440,11 @@ def solve_first_training_puzzle(
     with trace.span(
         "solve_first_training_puzzle",
         "CHAIN",
+        input_value={
+            "puzzle": "Basic Training 1 outer switches",
+            "participants": 4,
+            "method": "deterministic local visual policy, no walkthrough access",
+        },
         attributes={
             "puzzle.name": "Basic Training 1 outer switches",
             "puzzle.participants": 4,
@@ -450,11 +455,9 @@ def solve_first_training_puzzle(
         with trace.span(
             "unlock_tutorial_lobby",
             "TOOL",
-            attributes={
-                "neatlogs.tool.name": "bounded_controller_sequence",
-                "neatlogs.tool.description": "Advance the lobby dialogue for Green Link",
-                "neatlogs.tool.parameters": "P1: right, up, interact, dialogue confirms",
-            },
+            input_value={"P1": "right, up, interact, then dialogue confirms"},
+            output_value={"lobby": "tutorial dialogue advanced for Green Link"},
+            attributes={"neatlogs.tool.name": "bounded_controller_sequence"},
         ):
             emit("FAST MOTOR SKILL — unlocking the tutorial lobby")
             one(0, hold("right", 16))
@@ -469,11 +472,11 @@ def solve_first_training_puzzle(
         with trace.span(
             "assemble_team_on_warp",
             "TOOL",
-            attributes={
-                "neatlogs.tool.name": "four_player_warp_assembly",
-                "neatlogs.tool.description": "Move all four Links onto the cooperative warp",
-                "neatlogs.tool.parameters": "P1,P2,P3,P4 bounded approach vectors",
+            input_value={
+                "goal": "move all four Links onto the cooperative warp",
+                "approach": "P1-P4 bounded approach vectors, then a 11x11 sweep for P4",
             },
+            attributes={"neatlogs.tool.name": "four_player_warp_assembly"},
         ) as warp_span:
             emit("FAST MOTOR SKILL — assembling all four Links on the warp")
             approaches = (
@@ -518,11 +521,9 @@ def solve_first_training_puzzle(
         with trace.span(
             "collect_rupees_and_regroup",
             "TOOL",
-            attributes={
-                "neatlogs.tool.name": "synchronized_team_movement",
-                "neatlogs.tool.description": "Collect four entry Rupees and regroup",
-                "neatlogs.tool.parameters": "P1,P2,P3,P4 move south; P2,P4 realign",
-            },
+            input_value={"plan": "P1-P4 move south; P2 and P4 realign left"},
+            output_value={"team": "four entry Rupees collected and team regrouped"},
+            attributes={"neatlogs.tool.name": "synchronized_team_movement"},
         ):
             one(0, wait(500))
             emit("FAST MOTOR SKILL — collecting four Rupees and regrouping")
@@ -535,11 +536,9 @@ def solve_first_training_puzzle(
         with trace.span(
             "activate_outer_switches",
             "TOOL",
-            attributes={
-                "neatlogs.tool.name": "cooperative_switch_activation",
-                "neatlogs.tool.description": "Place Green and Purple on both outer switches",
-                "neatlogs.tool.parameters": "P1 left/down; P4 right/down; P2,P3 hold",
-            },
+            input_value={"plan": "P1 left then down; P4 right then down; P2 and P3 hold"},
+            output_value={"switches": "Green and Purple placed on both outer switches"},
+            attributes={"neatlogs.tool.name": "cooperative_switch_activation"},
         ):
             emit("COOPERATIVE PUZZLE — Green and Purple taking both switches")
             team({0: hold("left", 16), 3: hold("right", 21)})
@@ -549,19 +548,17 @@ def solve_first_training_puzzle(
         with trace.span(
             "verify_reward_chests_visible",
             "GUARDRAIL",
-            attributes={
-                "neatlogs.guardrail.input": "P1 framebuffer reward-chest regions",
+            input_value={
+                "question": "did the puzzle reveal both reward chests?",
+                "source": "P1 framebuffer reward-chest regions",
             },
         ) as verification_span:
             visible = first_training_reward_visible(frames.require())
-            trace.annotate(
+            trace.annotate(verification_span, {"neatlogs.guardrail.passed": visible})
+            trace.record_output(
                 verification_span,
-                {
-                    "neatlogs.guardrail.passed": visible,
-                    "neatlogs.guardrail.output": (
-                        "both reward chests visible" if visible else "reward chests absent"
-                    ),
-                },
+                "GUARDRAIL",
+                "both reward chests visible" if visible else "reward chests absent",
             )
             if not visible:
                 raise RuntimeError("the first puzzle did not reveal both reward chests")
@@ -571,6 +568,15 @@ def solve_first_training_puzzle(
                 "puzzle.completed": visible,
                 "puzzle.frames_advanced": session.frame - started,
                 "puzzle.warp_sweep_steps": sweep_steps,
+            },
+        )
+        trace.record_output(
+            puzzle_span,
+            "CHAIN",
+            {
+                "completed": visible,
+                "frames_advanced": session.frame - started,
+                "warp_sweep_steps": sweep_steps,
             },
         )
         trace.log(

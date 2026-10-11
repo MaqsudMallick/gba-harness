@@ -6,12 +6,49 @@ not need a tracing account, and importing the core package stays side-effect fre
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import neatlogs  # type: ignore[import-untyped]
+
+
+def serialize_io(value: object) -> str:
+    """Render one input/output payload as an OpenTelemetry-safe attribute string.
+
+    Strings pass through so the dashboard shows prose rather than a quoted blob;
+    anything else becomes stable JSON. Attribute values must be primitives, so a
+    payload that cannot be serialized degrades to `repr` instead of killing the run.
+    """
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def io_attributes(
+    kind: str,
+    *,
+    input_value: object | None = None,
+    output_value: object | None = None,
+) -> dict[str, str]:
+    """Name an input/output pair the way the Neatlogs reader expects.
+
+    The reader resolves a span's input and output from `neatlogs.<kind>.input` and
+    `neatlogs.<kind>.output`, lowercased against that span's own kind — a WORKFLOW
+    span's payload is invisible under a key built for any other kind.
+    """
+    prefix = f"neatlogs.{kind.lower()}"
+    attributes: dict[str, str] = {}
+    if input_value is not None:
+        attributes[f"{prefix}.input"] = serialize_io(input_value)
+    if output_value is not None:
+        attributes[f"{prefix}.output"] = serialize_io(output_value)
+    return attributes
 
 
 class RunTelemetry(Protocol):
@@ -22,12 +59,14 @@ class RunTelemetry(Protocol):
         name: str,
         kind: str,
         *,
-        capture_input: bool = False,
-        capture_output: bool = False,
+        input_value: object | None = None,
+        output_value: object | None = None,
         attributes: Mapping[str, object] | None = None,
     ) -> AbstractContextManager[Any]: ...
 
     def annotate(self, span: Any, attributes: Mapping[str, object]) -> None: ...
+
+    def record_output(self, span: Any, kind: str, value: object) -> None: ...
 
     def log(self, template: str, **values: object) -> None: ...
 
@@ -40,15 +79,18 @@ class NullTelemetry:
         name: str,
         kind: str,
         *,
-        capture_input: bool = False,
-        capture_output: bool = False,
+        input_value: object | None = None,
+        output_value: object | None = None,
         attributes: Mapping[str, object] | None = None,
     ) -> AbstractContextManager[None]:
-        del name, kind, capture_input, capture_output, attributes
+        del name, kind, input_value, output_value, attributes
         return nullcontext()
 
     def annotate(self, span: Any, attributes: Mapping[str, object]) -> None:
         del span, attributes
+
+    def record_output(self, span: Any, kind: str, value: object) -> None:
+        del span, kind, value
 
     def log(self, template: str, **values: object) -> None:
         del template, values
@@ -93,12 +135,15 @@ class NeatlogsSession:
         name: str,
         kind: str,
         *,
-        capture_input: bool = False,
-        capture_output: bool = False,
+        input_value: object | None = None,
+        output_value: object | None = None,
         attributes: Mapping[str, object] | None = None,
     ) -> Iterator[Any]:
-        del capture_input, capture_output
-        with neatlogs.trace(name, kind=kind, **dict(attributes or {})) as span:
+        span_attributes = dict(attributes or {})
+        span_attributes.update(
+            io_attributes(kind, input_value=input_value, output_value=output_value)
+        )
+        with neatlogs.trace(name, kind=kind, **span_attributes) as span:
             context = span.get_span_context()
             if context.is_valid:
                 trace_id = f"{context.trace_id:032x}"
@@ -109,6 +154,10 @@ class NeatlogsSession:
     def annotate(self, span: Any, attributes: Mapping[str, object]) -> None:
         for key, value in attributes.items():
             span.set_attribute(key, value)
+
+    def record_output(self, span: Any, kind: str, value: object) -> None:
+        """Attach a result to a span already open, under that span's own kind."""
+        self.annotate(span, io_attributes(kind, output_value=value))
 
     def log(self, template: str, **values: object) -> None:
         neatlogs.log(template, **values)
