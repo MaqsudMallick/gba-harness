@@ -206,9 +206,8 @@ class FourSwordsVisualTargetNavigator:
             return {}
 
         # Each private camera follows its Link near the screen centre. Assign
-        # P2 to a lower target and P3-P4 to the two upper targets. Keep each
-        # Link still only after its own target hides under that Link.
-        anchor = (120, 88)
+        # P2 to a lower target and P3-P4 to the two upper targets. Keep a Link
+        # still only when an active blue target ring is under that Link.
         target_slots = {1: 2, 2: 0, 3: 1}
         plans: dict[int, tuple[str, ...]] = {}
         for player in (1, 2, 3):
@@ -216,26 +215,23 @@ class FourSwordsVisualTargetNavigator:
             if player in self.reached_players:
                 plans[player] = ("wait",)
                 continue
-            targets = _orange_target_centres(to_rgb(views[player]))
+            rgb = to_rgb(views[player])
+            position = _link_position(rgb, player) or (120, 88)
+            active_targets = _active_target_centres(rgb)
+            if any(
+                _squared_distance(position, target) <= 12 * 12
+                for target in active_targets
+            ):
+                self.reached_players.add(player)
+                plans[player] = ("wait",)
+                continue
+            targets = _orange_target_centres(rgb)
             if not targets:
-                if player in self.near_players:
-                    self.reached_players.add(player)
-                plans[player] = ("wait",)
+                plans[player] = ("move_down",)
                 continue
-            target = min(targets, key=lambda point: _squared_distance(point, anchor))
+            target = min(targets, key=lambda point: _squared_distance(point, position))
             self.tracked_targets[player] = target
-            distance = _squared_distance(anchor, target)
-            if player in self.near_players and distance > 30 * 30:
-                self.reached_players.add(player)
-                plans[player] = ("wait",)
-                continue
-            if distance <= 20 * 20:
-                self.near_players.add(player)
-            if distance <= 6 * 6:
-                self.reached_players.add(player)
-                plans[player] = ("wait",)
-                continue
-            plans[player] = _single_route_step(anchor, target)
+            plans[player] = _single_route_step(position, target)
         return plans
 
     def _probe_plan(
@@ -376,6 +372,28 @@ def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
         ratio = width / height
         if 0.65 <= ratio <= 1.35 and int(ys.min()) >= 20:
             centres.append((int(np.mean(xs)), int(np.mean(ys))))
+    return tuple(centres)
+
+
+def _active_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
+    red = rgb[:, :, 0]
+    green = rgb[:, :, 1]
+    blue = rgb[:, :, 2]
+    mask = (red > 145) & (red < 205) & (green > 195) & (blue > 230)
+    white = (red > 230) & (green > 230) & (blue > 230)
+    centres: list[tuple[int, int]] = []
+    for xs, ys in _components(mask):
+        width = int(xs.max() - xs.min() + 1)
+        height = int(ys.max() - ys.min() + 1)
+        if len(xs) < 80 or not 16 <= width <= 45 or not 16 <= height <= 45:
+            continue
+        x0 = max(0, int(xs.min()) - 3)
+        x1 = min(rgb.shape[1], int(xs.max()) + 4)
+        y0 = max(0, int(ys.min()) - 3)
+        y1 = min(rgb.shape[0], int(ys.max()) + 4)
+        if int(np.count_nonzero(white[y0:y1, x0:x1])) < 50:
+            continue
+        centres.append((int(np.mean(xs)), int(np.mean(ys))))
     return tuple(centres)
 
 

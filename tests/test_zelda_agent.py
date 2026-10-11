@@ -170,11 +170,15 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
         player: int,
         position: tuple[int, int],
         visible_targets: tuple[tuple[int, int], ...] = targets,
+        active_targets: tuple[tuple[int, int], ...] = (),
     ) -> RawFrame:
         rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
         for x, y in visible_targets:
             rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
             rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        for x, y in active_targets:
+            rgb[y - 15 : y + 16, x - 15 : x + 16] = (173, 219, 255)
+            rgb[y - 9 : y + 10, x - 9 : x + 10] = (255, 251, 255)
         colours = {
             1: (220, 30, 25),
             2: (30, 70, 220),
@@ -206,7 +210,12 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     assert p2_unreached("reach_warps", tuple(p2_target_below))[1] == ("move_down",)
     assert 1 not in p2_unreached.reached_players
 
-    views = (views[0], view(1, (120, 80), ((120, 88),)), views[2], views[3])
+    views = (
+        views[0],
+        view(1, (120, 80), (), ((120, 88),)),
+        views[2],
+        views[3],
+    )
 
     plans = navigator("reach_warps", views)
 
@@ -221,7 +230,7 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
 
     reached_views = list(views)
     for player in (1, 2, 3):
-        reached_views[player] = view(player, (120, 80), ((120, 88),))
+        reached_views[player] = view(player, (120, 80), (), ((120, 88),))
 
     reached_plans = navigator("reach_warps", tuple(reached_views))
     assert reached_plans == {1: ("wait",), 2: ("wait",), 3: ("wait",)}
