@@ -200,6 +200,12 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     views = tuple(
         view(max(index, 1), positions.get(index, (120, 80))) for index in range(4)
     )
+    p2_unreached = FourSwordsVisualTargetNavigator()
+    p2_target_below = list(views)
+    p2_target_below[1] = view(1, (120, 80), ((120, 125),))
+    assert p2_unreached("reach_warps", tuple(p2_target_below))[1] == ("move_down",)
+    assert 1 not in p2_unreached.reached_players
+
     views = (views[0], view(1, (120, 80), ((120, 88),)), views[2], views[3])
 
     plans = navigator("reach_warps", views)

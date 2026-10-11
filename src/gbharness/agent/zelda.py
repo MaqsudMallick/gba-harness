@@ -205,17 +205,14 @@ class FourSwordsVisualTargetNavigator:
         if stage != "reach_warps" or len(views) < 4:
             return {}
 
-        # P2 already activated a target during the probe. Keep it there.
-        self.assignments.setdefault(1, 0)
-        self.reached_players.add(1)
-
-        # Each private camera follows its Link near the screen centre. P3 and
-        # P4 approach the grid from different sides. Keep each Link still after
-        # arrival.
+        # Each private camera follows its Link near the screen centre. Assign
+        # P2 to a lower target and P3-P4 to the two upper targets. Keep each
+        # Link still only after its own target hides under that Link.
         anchor = (120, 88)
-        plans: dict[int, tuple[str, ...]] = {1: ("wait",)}
-        for player in (2, 3):
-            self.assignments.setdefault(player, player - 1)
+        target_slots = {1: 2, 2: 0, 3: 1}
+        plans: dict[int, tuple[str, ...]] = {}
+        for player in (1, 2, 3):
+            self.assignments.setdefault(player, target_slots[player])
             if player in self.reached_players:
                 plans[player] = ("wait",)
                 continue
