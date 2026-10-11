@@ -208,12 +208,26 @@ class MarioKartVisionAgent:
 
     decision_interval: int = 1
     dead_zone: float = 14.0
+    stall_threshold: int = 54
+    off_road_escape_threshold: int = 210
+    reverse_escape_frames: int = 42
+    forward_escape_frames: int = 66
+    motion_threshold: float = 0.9
     smoothed_center: float = ROAD_AIM_X
     smoothed_heading: float = 0.0
     previous_error: float = 0.0
     last_steer: Button | None = None
     recovery_steer: Button | None = None
     lost_frames: int = 0
+    off_road_frames: int = 0
+    stalled_frames: int = 0
+    seen_track: bool = False
+    escape_stage: str | None = None
+    escape_frames_left: int = 0
+    escape_steer: Button = Button.LEFT
+    escape_attempts: int = 0
+    previous_probe: np.ndarray | None = field(default=None, init=False, repr=False)
+    last_motion: float = field(default=0.0, init=False)
     name: str = field(default="mario-kart-local-vision", init=False)
 
     def reset(self) -> None:
@@ -223,9 +237,95 @@ class MarioKartVisionAgent:
         self.last_steer = None
         self.recovery_steer = None
         self.lost_frames = 0
+        self.off_road_frames = 0
+        self.stalled_frames = 0
+        self.seen_track = False
+        self.escape_stage = None
+        self.escape_frames_left = 0
+        self.escape_steer = Button.LEFT
+        self.escape_attempts = 0
+        self.previous_probe = None
+        self.last_motion = 0.0
+
+    @staticmethod
+    def _opposite(steer: Button) -> Button:
+        return Button.RIGHT if steer == Button.LEFT else Button.LEFT
+
+    def _measure_motion(self, rgb: np.ndarray) -> float:
+        """Measure world movement while ignoring the HUD and the kart sprite."""
+        probe = rgb[76:122:3, 38:202:3].astype(np.int16).mean(axis=2)
+        if self.previous_probe is None:
+            motion = 99.0
+        else:
+            motion = float(np.abs(probe - self.previous_probe).mean())
+        self.previous_probe = probe
+        self.last_motion = motion
+        return motion
+
+    def _begin_escape(self) -> None:
+        steer = self.last_steer or self.recovery_steer or Button.LEFT
+        if self.escape_attempts % 2:
+            steer = self._opposite(steer)
+        self.escape_steer = steer
+        self.escape_stage = "reverse"
+        self.escape_frames_left = self.reverse_escape_frames
+        self.stalled_frames = 0
+        self.off_road_frames = 0
+
+    def _escape_decision(self) -> PlayerDecision:
+        """Perform a bounded three-point turn instead of oscillating forever."""
+        if self.escape_stage == "reverse":
+            buttons = frozenset((Button.B, self.escape_steer))
+            scene = "unstuck-reverse"
+            note = (
+                "Kart stopped making progress; reversing away from the obstacle "
+                f"(motion={self.last_motion:.2f})."
+            )
+        else:
+            buttons = frozenset((Button.A, self._opposite(self.escape_steer)))
+            scene = "unstuck-forward"
+            note = "Completing a three-point turn and searching for the road."
+
+        self.escape_frames_left -= self.decision_interval
+        if self.escape_frames_left <= 0:
+            if self.escape_stage == "reverse":
+                self.escape_stage = "forward"
+                self.escape_frames_left = self.forward_escape_frames
+            else:
+                self.escape_stage = None
+                self.escape_attempts += 1
+                self.recovery_steer = None
+                self.lost_frames = 0
+                self.previous_probe = None
+        return PlayerDecision(buttons, scene, note=note)
 
     def decide(self, rgb: np.ndarray, frame: int) -> PlayerDecision:
         observation = observe_mario_kart(rgb)
+        motion = self._measure_motion(rgb)
+
+        if observation.on_road:
+            self.seen_track = True
+            self.off_road_frames = 0
+            self.stalled_frames = 0
+            # Once the wheels are visibly back on asphalt, immediately hand control
+            # back to the normal road follower instead of finishing an obsolete turn.
+            self.escape_stage = None
+        elif observation.racing or observation.grass_fraction > 0.2:
+            self.off_road_frames += self.decision_interval
+            if motion < self.motion_threshold:
+                self.stalled_frames += self.decision_interval
+            else:
+                self.stalled_frames = max(0, self.stalled_frames - self.decision_interval)
+
+        if self.escape_stage is not None:
+            return self._escape_decision()
+        if (
+            self.stalled_frames >= self.stall_threshold
+            or self.off_road_frames >= self.off_road_escape_threshold
+        ):
+            self._begin_escape()
+            return self._escape_decision()
+
         buttons = {Button.A}
         if (
             observation.racing
@@ -282,7 +382,8 @@ class MarioKartVisionAgent:
             # Lift for half of each control cycle on a visible bend, like a human easing
             # off the accelerator before turning in.
             if (
-                observation.on_road
+                scene == "race"
+                and observation.on_road
                 and abs(observation.heading) >= 16
                 and phase >= (4 if abs(observation.heading) >= 28 else 7)
             ):

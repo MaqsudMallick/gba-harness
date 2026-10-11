@@ -8,13 +8,16 @@ from gbharness.buttons import Button
 from gbharness.vision.capture import RawFrame
 
 
-def race_frame(center: int = 120) -> np.ndarray:
+def race_frame(center: int = 120, far_center: int | None = None) -> np.ndarray:
     frame = np.full((160, 240, 3), (20, 190, 35), dtype=np.uint8)
     frame[:82] = (80, 175, 245)
+    far_center = center if far_center is None else far_center
     for row in range(82, 145):
         half_width = 16 + (row - 82)
-        left = max(0, center - half_width)
-        right = min(240, center + half_width)
+        progress = (row - 82) / (145 - 82)
+        row_center = round(far_center * (1 - progress) + center * progress)
+        left = max(0, row_center - half_width)
+        right = min(240, row_center + half_width)
         frame[row, left:right] = (132, 132, 132)
     return frame
 
@@ -78,3 +81,42 @@ def test_autonomous_player_crops_assigned_view_and_caches_decisions() -> None:
     assert cached is first
     assert refreshed.scene == first.scene
     assert controller.decisions == 2
+
+
+def test_agent_uses_three_point_escape_when_stranded() -> None:
+    agent = MarioKartVisionAgent(
+        stall_threshold=2,
+        off_road_escape_threshold=99,
+        reverse_escape_frames=2,
+        forward_escape_frames=2,
+    )
+    grass = np.full((160, 240, 3), (20, 190, 35), dtype=np.uint8)
+
+    agent.decide(grass, frame=0)
+    agent.decide(grass, frame=1)
+    reverse = agent.decide(grass, frame=2)
+    reverse_last = agent.decide(grass, frame=3)
+    forward = agent.decide(grass, frame=4)
+
+    assert reverse.scene == reverse_last.scene == "unstuck-reverse"
+    assert Button.B in reverse.buttons
+    assert Button.A not in reverse.buttons
+    assert len(reverse.buttons & {Button.LEFT, Button.RIGHT}) == 1
+    assert forward.scene == "unstuck-forward"
+    assert Button.A in forward.buttons
+    assert Button.B not in forward.buttons
+    assert (reverse.buttons & {Button.LEFT, Button.RIGHT}) != (
+        forward.buttons & {Button.LEFT, Button.RIGHT}
+    )
+
+
+def test_wrong_way_recovery_keeps_accelerating_on_a_bend() -> None:
+    frame = race_frame(center=150, far_center=92)
+    frame[35:48, 80:175] = (230, 20, 20)
+    frame[48:64, 80:175] = (245, 245, 245)
+
+    decision = MarioKartVisionAgent().decide(frame, frame=8)
+
+    assert observe_mario_kart(frame).reverse
+    assert decision.scene == "reverse-recovery"
+    assert Button.A in decision.buttons
