@@ -290,6 +290,12 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     assert reached_plans == {1: ("wait",), 2: ("wait",), 3: ("wait",)}
     assert navigator.all_assigned_players_reached(tuple(reached_views))
 
+    displaced_views = list(reached_views)
+    displaced_views[1] = view(1, (120, 80), targets[1:], ((70, 40),))
+    displaced_plan = navigator("reach_warps", tuple(displaced_views))
+    assert displaced_plan[1] != ("wait",)
+    assert 1 not in navigator.reached_players
+
 
 def _merge_test_targets(
     visible: tuple[tuple[int, int], ...],

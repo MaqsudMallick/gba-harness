@@ -247,12 +247,16 @@ class FourSwordsVisualTargetNavigator:
         plans: dict[int, tuple[str, ...]] = {}
         for player in (1, 2, 3):
             self.assignments.setdefault(player, target_slots[player])
-            if player in self.reached_players:
-                plans[player] = ("wait",)
-                continue
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
+            if player in self.reached_players:
+                if any(_squared_distance(position, active) <= 12 * 12 for active in active_targets):
+                    plans[player] = ("wait",)
+                    continue
+                self.reached_players.discard(player)
+                self.active_counts[player] = 0
+                self.active_frames.pop(player, None)
             visible_grid = _forward_target_grid(rgb)
             grid = _forward_marked_target_grid(rgb)
             if grid is not None:
