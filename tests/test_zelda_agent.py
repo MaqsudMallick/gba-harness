@@ -380,6 +380,47 @@ def test_reach_warps_preserves_the_scouts_confirmed_probe_target() -> None:
     assert 1 in navigator.reached_players
 
 
+def test_new_room_holds_followers_until_the_scout_confirms_progress() -> None:
+    navigator = FourSwordsVisualTargetNavigator()
+
+    def frame(colour: tuple[int, int, int], index: int) -> RawFrame:
+        rgb = np.full((160, 240, 3), colour, dtype=np.uint8)
+        packed = (
+            ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (rgb[:, :, 2].astype(np.uint16) >> 3)
+        )
+        return RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=240,
+            height=160,
+            pitch=480,
+            index=index,
+        )
+
+    first = frame((120, 170, 90), 0)
+    second = frame((180, 130, 70), 1)
+    third = frame((80, 150, 190), 2)
+
+    assert navigator("explore_room", (first,) * 4) == {
+        2: ("wait",),
+        3: ("wait",),
+    }
+    assert navigator("explore_room", (second,) * 4) == {
+        2: ("wait",),
+        3: ("wait",),
+    }
+    assert navigator("explore_room", (third,) * 4) == {}
+    assert navigator.explore_scout_ready
+
+    navigator.reset()
+
+    assert navigator("explore_room", (third,) * 4) == {
+        2: ("wait",),
+        3: ("wait",),
+    }
+
+
 def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None:
     navigator = FourSwordsVisualTargetNavigator()
 

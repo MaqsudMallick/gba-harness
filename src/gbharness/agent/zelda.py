@@ -216,6 +216,9 @@ class FourSwordsVisualTargetNavigator:
     active_frames: dict[int, int] = field(default_factory=dict)
     probe_reached: bool = False
     dialogue_attempts: int = 0
+    explore_scout_view: np.ndarray | None = field(default=None, repr=False)
+    explore_scout_progress: int = 0
+    explore_scout_ready: bool = False
 
     def reset(self) -> None:
         """Clear first-room visual state before the team enters a new room."""
@@ -233,12 +236,17 @@ class FourSwordsVisualTargetNavigator:
         self.active_frames.clear()
         self.probe_reached = False
         self.dialogue_attempts = 0
+        self.explore_scout_view = None
+        self.explore_scout_progress = 0
+        self.explore_scout_ready = False
 
     def __call__(
         self,
         stage: str,
         views: tuple[RawFrame, ...],
     ) -> dict[int, tuple[str, ...]]:
+        if stage == "explore_room":
+            return self._explore_room_gate(views)
         if stage == "reach_npc":
             return self._reach_npc_plan(views)
         if stage == "probe_target":
@@ -393,6 +401,24 @@ class FourSwordsVisualTargetNavigator:
             plans[player] = _precision_route_step(position, target)
         return plans
 
+    def _explore_room_gate(
+        self,
+        views: tuple[RawFrame, ...],
+    ) -> dict[int, tuple[str, ...]]:
+        """Keep followers still until P2 confirms visual route progress."""
+        if self.explore_scout_ready or len(views) < 4:
+            return {}
+
+        current = to_rgb(views[1])
+        previous = self.explore_scout_view
+        self.explore_scout_view = current.copy()
+        if previous is not None and _scene_change_fraction(previous, current) >= 0.08:
+            self.explore_scout_progress += 1
+        if self.explore_scout_progress >= 2:
+            self.explore_scout_ready = True
+            return {}
+        return {2: ("wait",), 3: ("wait",)}
+
     def _reach_npc_plan(
         self,
         views: tuple[RawFrame, ...],
@@ -472,6 +498,19 @@ class FourSwordsVisualTargetNavigator:
 
 def _squared_distance(first: tuple[int, int], second: tuple[int, int]) -> int:
     return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2
+
+
+def _scene_change_fraction(previous: np.ndarray, current: np.ndarray) -> float:
+    """Measure a room or camera change while excluding most HUD pixels."""
+    if previous.shape != current.shape:
+        return 1.0
+    previous_playfield = previous[20:150]
+    current_playfield = current[20:150]
+    difference = np.max(
+        np.abs(current_playfield.astype(np.int16) - previous_playfield.astype(np.int16)),
+        axis=2,
+    )
+    return float(np.count_nonzero(difference >= 24)) / float(difference.size)
 
 
 def _private_dialogue_visible(rgb: np.ndarray) -> bool:
