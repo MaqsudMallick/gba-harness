@@ -229,6 +229,9 @@ uv run python examples/zelda_four_swords.py \
   --screenshot artifacts/zelda-four-swords-4p-agent.png
 ```
 
+Add `--live` to keep a responsive four-console Pygame window open during decisions. The
+window shows every model's latest action and remains open after the bounded run until Escape.
+
 `--max-model-calls` is a hard team-wide cost ceiling; a complete four-player turn consumes
 four calls. The run prints per-player actions and token totals plus its Neatlogs trace ID.
 The ROM remains local and gitignored.

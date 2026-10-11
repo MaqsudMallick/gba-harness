@@ -9,12 +9,16 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 from pathlib import Path
+
+import pygame
 
 from gbharness.agent import (
     FOUR_SWORDS_POLICY,
     FOUR_SWORDS_ROLES,
     LinkedAgentRunner,
+    LinkedEpisodeResult,
     LinkedRunnerConfig,
     LinkedTurnRecord,
     PlayerAssignment,
@@ -26,7 +30,7 @@ from gbharness.config import load_settings
 from gbharness.multiplayer import LinkedSession
 from gbharness.observability import NeatlogsSession
 from gbharness.vision.capture import FrameLatch
-from gbharness.vision.encode import to_png
+from gbharness.vision.encode import to_png, to_rgb
 
 DEFAULT_ROM = Path("roms/Legend of Zelda, The - A Link to the Past & Four Swords (USA).gba")
 DEFAULT_MODELS = (
@@ -77,6 +81,12 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--screenshot", type=Path)
     result.add_argument("--log-turns", action="store_true")
+    result.add_argument(
+        "--live",
+        action="store_true",
+        help="show all four consoles and agent decisions in a live Pygame window",
+    )
+    result.add_argument("--scale", type=int, default=2, help="live window integer scale")
     return result
 
 
@@ -84,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.setup_only and args.skip_setup:
         raise SystemExit("--setup-only and --skip-setup cannot be combined")
+    if args.live and (args.smoke or args.setup_only):
+        raise SystemExit("--live cannot be combined with --smoke or --setup-only")
+    if args.scale < 1:
+        raise SystemExit("--scale must be positive")
     if not args.rom.is_file():
         raise SystemExit(f"ROM does not exist: {args.rom}")
     if args.boot_frames < 1:
@@ -168,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                     telemetry=telemetry,
                     on_turn=_print_turn if args.log_turns else None,
                 )
-                result = runner.run()
+                result = _run_live(runner, latch, args.scale) if args.live else runner.run()
                 final_png = to_png(latch.require())
                 summary = (
                     f"zelda agents finished: status={result.status}, "
@@ -201,6 +215,97 @@ def _print_turn(record: LinkedTurnRecord) -> None:
         f"turn={record.turn} frame={record.frame} +{record.frames_advanced} | {actions}",
         flush=True,
     )
+
+
+def _run_live(
+    runner: LinkedAgentRunner,
+    latch: FrameLatch,
+    scale: int,
+) -> LinkedEpisodeResult:
+    """Keep a responsive four-console window open while agents run in a worker."""
+    pygame.init()
+    frame = latch.require()
+    native_size = (frame.width, frame.height)
+    game_size = (frame.width * scale, frame.height * scale)
+    panel_height = 146
+    screen = pygame.display.set_mode((game_size[0], game_size[1] + panel_height))
+    pygame.display.set_caption("gbharness — ZELDA FOUR SWORDS — 4 VERTEX AGENTS")
+    font = pygame.font.Font(None, 22)
+    clock = pygame.time.Clock()
+    latest: list[LinkedTurnRecord | None] = [None]
+    outcome: list[LinkedEpisodeResult] = []
+    failure: list[BaseException] = []
+    previous_on_turn = runner.on_turn
+
+    def update(record: LinkedTurnRecord) -> None:
+        latest[0] = record
+        if previous_on_turn is not None:
+            previous_on_turn(record)
+
+    runner.on_turn = update
+
+    def work() -> None:
+        try:
+            outcome.append(runner.run())
+        except BaseException as exc:
+            failure.append(exc)
+
+    worker = threading.Thread(target=work, name="zelda-four-agent", daemon=True)
+    worker.start()
+    running = True
+    try:
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or (
+                    event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
+                ):
+                    runner.stop_event.set()
+                    running = False
+
+            latest_frame = latch.latest()
+            if latest_frame is None:
+                clock.tick(30)
+                continue
+            if (latest_frame.width, latest_frame.height) != native_size:
+                raise RuntimeError("live Zelda layout changed dimensions unexpectedly")
+            rgb = to_rgb(latest_frame)
+            native = pygame.image.frombytes(rgb.tobytes(), native_size, "RGB")
+            screen.fill((10, 12, 18))
+            screen.blit(pygame.transform.scale(native, game_size), (0, 0))
+
+            record = latest[0]
+            complete = not worker.is_alive()
+            header = (
+                "RUN FINISHED — press Esc to close"
+                if complete
+                else "4 VERTEX AGENTS LIVE — keyboard control disabled"
+            )
+            lines = [header]
+            if record is None:
+                lines.append("All four players are observing the dungeon…")
+            else:
+                for player in record.players:
+                    model = player.provider.removeprefix("vertex:")
+                    lines.append(
+                        f"P{player.player + 1} {model}: {player.action} ({player.confidence:.0%})"
+                    )
+            lines.append("Esc: stop agents and close")
+            for index, line in enumerate(lines[:6]):
+                color = (110, 238, 174) if index == 0 else (225, 228, 238)
+                screen.blit(
+                    font.render(line, True, color),
+                    (12, game_size[1] + 8 + index * 22),
+                )
+            pygame.display.flip()
+            clock.tick(30)
+    finally:
+        runner.stop_event.set()
+        worker.join()
+        pygame.quit()
+
+    if failure:
+        raise failure[0]
+    return outcome[0]
 
 
 if __name__ == "__main__":
