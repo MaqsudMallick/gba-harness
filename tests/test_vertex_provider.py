@@ -63,7 +63,31 @@ def test_vertex_returns_a_normalized_decision() -> None:
     assert decision.input_tokens == 42
     assert decision.output_tokens == 7
     assert models.kwargs["model"] == "gemini-test"
-    assert models.kwargs["config"].max_output_tokens == 320
+    assert models.kwargs["config"].max_output_tokens == 1024
+    assert models.kwargs["config"].thinking_config.thinking_budget == 0
+
+
+def test_vertex_bounds_thinking_for_reasoning_models() -> None:
+    models = FakeModels(
+        {
+            "action": "wait",
+            "confidence": 0.8,
+            "scene": "menu",
+            "terminal": False,
+            "progress": None,
+            "note": "Waiting for link.",
+        }
+    )
+    provider = VertexDecisionProvider(
+        project="test",
+        location="global",
+        model="gemini-2.5-pro",
+        client=SimpleNamespace(models=models),
+    )
+
+    provider.decide(request())
+
+    assert models.kwargs["config"].thinking_config.thinking_budget == 128
 
 
 def test_vertex_rejects_an_action_outside_the_policy() -> None:
@@ -85,4 +109,3 @@ def test_vertex_rejects_an_action_outside_the_policy() -> None:
     )
     with pytest.raises(ValueError, match="allowed actions"):
         provider.decide(request())
-

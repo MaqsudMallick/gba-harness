@@ -16,6 +16,13 @@ in this file.
       The minimap-assisted deterministic evaluation finished Peach Circuit in `3:55.98`
       with lap times `1:19.58`, `1:10.70`, and `1:25.70`, improving the original
       road-view-only `5:46.75` result by `1:50.77`.
+- [x] Boot four linked Zelda: Four Swords consoles from fresh local saves, pass the
+      four-system handshake, and visually verify all four players in the same dungeon.
+- [x] Give four Vertex-only agents private 240x160 observations, distinct cooperative roles,
+      concurrent decisions, a hard shared call budget, and atomic controller execution.
+- [x] Record a corrected live four-agent gameplay trace: `651dabc1d005e5c15346b5899a107a47`
+      (four Vertex calls, 4,106 input tokens, 372 output tokens). The one-turn bounded run
+      ended at its configured turn limit and is evidence of integration, not room completion.
 - [ ] Add match telemetry: per-player decisions, recovery, lap/progress, finish order, and
       a Neatlogs trace that makes the competition inspectable.
 - [ ] Add gamepad bindings for human P3/P4; the backend already exposes four controller

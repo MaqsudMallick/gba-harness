@@ -8,6 +8,14 @@ from gbharness.agent.contracts import (
     GamePolicy,
 )
 from gbharness.agent.decide import Decider, Verdict
+from gbharness.agent.linked_runner import (
+    LinkedAgentRunner,
+    LinkedEpisodeResult,
+    LinkedRunnerConfig,
+    LinkedTurnRecord,
+    PlayerAssignment,
+    PlayerTurnRecord,
+)
 from gbharness.agent.mario import MarioAutopilot, MarioVisionController, observe_mario
 from gbharness.agent.mario_kart import (
     MarioKartObservation,
@@ -31,6 +39,15 @@ from gbharness.agent.openai_questions import QUESTIONS
 from gbharness.agent.policy import ACTION_DESCRIPTIONS, ACTIONS, resolve
 from gbharness.agent.runner import AgentRunner, EpisodeResult, RunnerConfig, TurnRecord
 from gbharness.agent.vertex import VertexDecisionProvider
+from gbharness.agent.zelda import (
+    FOUR_SWORDS_POLICY,
+    FOUR_SWORDS_ROLES,
+    ZELDA_ACTION_DESCRIPTIONS,
+    ZELDA_ACTIONS,
+    FourSwordsBootstrapResult,
+    bootstrap_four_swords,
+    four_swords_gameplay_visible,
+)
 
 __all__ = [
     "ACTIONS",
@@ -42,7 +59,14 @@ __all__ = [
     "DecisionProvider",
     "DecisionRequest",
     "EpisodeResult",
+    "FOUR_SWORDS_POLICY",
+    "FOUR_SWORDS_ROLES",
+    "FourSwordsBootstrapResult",
     "GamePolicy",
+    "LinkedAgentRunner",
+    "LinkedEpisodeResult",
+    "LinkedRunnerConfig",
+    "LinkedTurnRecord",
     "MarioAutopilot",
     "MarioKartObservation",
     "MarioKartMinimapNavigator",
@@ -58,7 +82,13 @@ __all__ = [
     "VertexDecisionProvider",
     "AutonomousPlayer",
     "PlayerDecision",
+    "PlayerAssignment",
+    "PlayerTurnRecord",
     "VisualPlayerAgent",
+    "ZELDA_ACTIONS",
+    "ZELDA_ACTION_DESCRIPTIONS",
+    "bootstrap_four_swords",
+    "four_swords_gameplay_visible",
     "observe_mario",
     "observe_mario_kart",
     "open_linked_lobby",

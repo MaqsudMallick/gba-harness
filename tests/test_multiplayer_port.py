@@ -33,6 +33,15 @@ def test_multiplayer_controller_indices_are_checked(test_rom_bytes, multiplayer_
         port.press_for(2, Button.A)
 
 
+def test_four_swords_assist_is_opt_in(test_rom_bytes, multiplayer_core) -> None:
+    with LibretroMultiplayerPort(
+        test_rom_bytes,
+        core=multiplayer_core,
+        four_swords_assist=True,
+    ) as port:
+        assert port._option_values["splitscreen_fs_assist"] == b"on"
+
+
 @pytest.mark.parametrize("players", [0, 1, 5])
 def test_multiplayer_requires_two_to_four_players(
     test_rom_bytes, multiplayer_core, players: int

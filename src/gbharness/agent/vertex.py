@@ -89,22 +89,35 @@ class VertexDecisionProvider:
             prompt,
             types.Part.from_bytes(data=request.image_png, mime_type="image/png"),
         ]
+        thinking = _thinking_config(self.model)
         response = self._client.models.generate_content(
             model=self.model,
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_INSTRUCTION,
                 temperature=0.1,
-                # The required schema has six fields. A 160-token ceiling occasionally
-                # truncated otherwise-valid JSON before the final string closed.
-                max_output_tokens=320,
+                # Reasoning models count hidden thought tokens against this ceiling.
+                # Bound their thinking separately and leave enough room for the required
+                # six-field JSON object.
+                max_output_tokens=1024,
+                thinking_config=thinking,
                 response_mime_type="application/json",
                 response_json_schema=schema,
             ),
         )
         payload = response.parsed
         if payload is None:
-            payload = json.loads(response.text or "{}")
+            text = response.text or ""
+            if not text.strip():
+                reasons = [
+                    str(getattr(candidate, "finish_reason", "unknown"))
+                    for candidate in (getattr(response, "candidates", None) or ())
+                ]
+                raise ValueError(
+                    "Vertex returned no structured decision text"
+                    + (f"; finish reasons={reasons}" if reasons else "")
+                )
+            payload = json.loads(text)
         if not isinstance(payload, dict):
             raise ValueError(f"Vertex returned a non-object decision: {type(payload).__name__}")
 
@@ -131,3 +144,12 @@ class VertexDecisionProvider:
             raw=response,
         )
 
+
+def _thinking_config(model: str) -> types.ThinkingConfig:
+    """Keep structured control decisions cheap and prevent thought-only responses."""
+    normalized = model.lower()
+    if "gemini-3" in normalized:
+        return types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
+    if "2.5-pro" in normalized:
+        return types.ThinkingConfig(thinking_budget=128)
+    return types.ThinkingConfig(thinking_budget=0)

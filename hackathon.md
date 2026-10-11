@@ -21,7 +21,7 @@ portable across games and multiplayer formats.
 - Python 3.13 and `uv`
 - mGBA through the Libretro ABI
 - Pygame live viewer
-- Vertex AI / Google Gen AI SDK (planned default decision provider)
+- Vertex AI / Google Gen AI SDK (default cloud decision provider)
 - OpenAI Decisions API (optional comparison adapter)
 - neatlogs for agent-run traces
 - Entire for code-session checkpoints
@@ -112,6 +112,19 @@ portable across games and multiplayer formats.
   `artifacts/mario-kart-linked-lobby.png`; neither the ROM nor artifacts are committed.
 - Completed multiplayer verification: all 322 tests pass, Ruff is clean, strict mypy is
   clean across 27 source files, and the real core reports controller ports 0 and 1 polled.
+- Completed: built a four-agent Zelda: Four Swords integration without changing the Mario
+  Kart adapter. Four private screen observations are sent concurrently to four Google models
+  through Vertex AI, then their finite controller macros execute atomically on one linked
+  clock. Calls, confidence, recovery, tokens, roles, and actions are Neatlogs-instrumented.
+- Completed real-ROM verification from a fresh boot: deterministic setup created four local
+  files, entered Four Swords, completed the four-system handshake, and visually confirmed all
+  four Links in the same dungeon before spending a model call. Local evidence is written to
+  `artifacts/zelda-four-swords-4p-setup.png` and remains uncommitted.
+- Completed live four-model verification with a four-call ceiling. Gemini 2.5 Flash Lite,
+  Gemini 2.5 Flash, Gemini 2.5 Pro, and Gemini 3 Flash Preview each observed its own dungeon
+  view and chose one action; the team advanced in lockstep. Trace
+  `651dabc1d005e5c15346b5899a107a47` records 4,106 input and 372 output tokens. The run ended
+  at its configured one-turn limit and does not claim room completion.
 
 ## Demo
 
@@ -122,6 +135,7 @@ uv run python examples/run_rom.py --rom roms/game.gba --screenshot artifacts/boo
 uv run python examples/live_rom.py
 uv run python examples/agent_rom.py --controller local --max-turns 150
 uv run python examples/multiplayer_rom.py --rom roms/game.gba --players 2
+uv run python examples/zelda_four_swords.py --setup-only
 ```
 
 ROMs and credentials are local-only and must not be committed or shared.
@@ -130,11 +144,14 @@ ROMs and credentials are local-only and must not be committed or shared.
 
 - World 1-1 has a verified local visual skill; unfamiliar levels still require a general
   provider or another game-specific skill.
-- The reusable game-policy boundary exists, but only the Mario starter policy is implemented.
+- The reusable game-policy boundary now has Mario and Zelda: Four Swords adapters. Zelda has
+  proven four-agent action execution; completing a full cooperative room remains an evaluation
+  milestone.
 - The representative completed application trace has been recorded; a sanitized dashboard
   link or screenshot still has to be prepared for the public submission.
-- Linked agent-vs-human and agent-vs-agent stepping is implemented. A racing policy that
-  completes and verifies a full Mario Kart race is the next game-specific milestone.
+- Linked agent-vs-human and agent-vs-agent stepping is implemented. Mario Kart has a verified
+  local race completion; Four Swords still needs a longer bounded evaluation that completes
+  and verifies a cooperative room.
 - Ranked matches need a policy for save states; emulator rollback should normally be
   disabled because it gives agents an unfair advantage.
 

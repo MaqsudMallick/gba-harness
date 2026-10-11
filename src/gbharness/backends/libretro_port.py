@@ -40,7 +40,7 @@ import ctypes
 import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, Self
 
 from gbharness.buttons import Button
 from gbharness.port import EmulationEnded
@@ -121,6 +121,7 @@ def _vendor_dirs() -> list[Path]:
     if package_root not in roots:
         roots.append(package_root)
     return [root / VENDOR_SUBDIR for root in roots]
+
 
 # ctypes callback signatures. Kept at module scope so the types are created once.
 _ENV_T = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_uint, ctypes.c_void_p)
@@ -285,9 +286,7 @@ class LibretroInputPort:
         self._lib = ctypes.CDLL(str(self._core_path))
         self._players = players
         self._held_by_player: list[set[Button]] = [set() for _ in range(players)]
-        self._option_values = {
-            key: value.encode() for key, value in (core_options or {}).items()
-        }
+        self._option_values = {key: value.encode() for key, value in (core_options or {}).items()}
         self._closed = False
         self._loaded = False
         self.frames_run = 0
@@ -530,11 +529,9 @@ class LibretroInputPort:
         if not isinstance(player, int) or isinstance(player, bool):
             raise TypeError(f"player must be an int, got {type(player).__name__}")
         if not 0 <= player < self._players:
-            raise IndexError(
-                f"player index {player} is outside [0, {self._players - 1}]"
-            )
+            raise IndexError(f"player index {player} is outside [0, {self._players - 1}]")
 
-    def __enter__(self) -> LibretroInputPort:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -558,6 +555,7 @@ class LibretroMultiplayerPort(LibretroInputPort):
         system_dir: str | Path | None = None,
         frame_sink: FrameSink | None = None,
         layout: str = "auto",
+        four_swords_assist: bool = False,
     ) -> None:
         if not 2 <= players <= 4:
             raise ValueError(f"multiplayer sessions need 2-4 players, got {players}")
@@ -573,6 +571,7 @@ class LibretroMultiplayerPort(LibretroInputPort):
                 "splitscreen_players": str(players),
                 "splitscreen_layout": layout,
                 "splitscreen_audio": "mixed",
+                "splitscreen_fs_assist": "on" if four_swords_assist else "off",
                 "splitscreen_overlays": "on",
             },
         )

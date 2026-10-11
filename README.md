@@ -202,6 +202,37 @@ uv run python examples/multiplayer_rom.py \
   --screenshot artifacts/mario-kart-linked-lobby.png
 ```
 
+### Four-agent Zelda: Four Swords
+
+The Zelda launcher creates four local save files, selects Four Swords, completes the
+four-system handshake, and visually verifies the heart HUD on every private viewport before
+any model is called. This setup is deterministic and token-free. Its Four Swords handshake
+assist is opt-in on this launcher only, so Mario Kart and other linked games keep the core's
+default behavior.
+
+First verify the real four-player room without cloud calls:
+
+```bash
+uv run python examples/zelda_four_swords.py --setup-only \
+  --screenshot artifacts/zelda-four-swords-4p-setup.png
+```
+
+Then run four concurrent Vertex visual agents. Each receives only its own 240x160 console,
+a distinct team role, and the same bounded action vocabulary; their chosen macros are
+applied atomically on the shared emulator clock. The default team uses four Google models
+available through Vertex AI: Gemini 2.5 Flash Lite, Gemini 2.5 Flash, Gemini 2.5 Pro, and
+Gemini 3 Flash Preview.
+
+```bash
+uv run python examples/zelda_four_swords.py \
+  --max-turns 10 --max-model-calls 40 --log-turns \
+  --screenshot artifacts/zelda-four-swords-4p-agent.png
+```
+
+`--max-model-calls` is a hard team-wide cost ceiling; a complete four-player turn consumes
+four calls. The run prints per-player actions and token totals plus its Neatlogs trace ID.
+The ROM remains local and gitignored.
+
 ## Autonomous agent
 
 The default Mario controller is a local closed-loop visual skill. It reads emulator frames,
