@@ -36,8 +36,8 @@ _NPC_STAGE_ORDER = (
 _NAVIGATION_OBJECTIVES = {
     "reach_npc": "Move the designated AI Link next to the visible pink NPC.",
     "advance_dialogue": "Use the designated AI Link to complete the visible NPC dialogue.",
-    "probe_target": "Use the designated AI Link to test one visible circular floor target.",
-    "reach_warps": "Move P2, P3, and P4 to three separate visible circular targets.",
+    "probe_target": "Move the designated AI Link up to test the forward warp grid.",
+    "reach_warps": "Move P2, P3, and P4 to three separate forward warp targets.",
     "complete": "Keep all assigned AI Links on their completed targets.",
 }
 
@@ -177,14 +177,17 @@ class VertexTeamDecisionProvider:
                 "relative positions. Put that face action immediately before interact. "
                 "Other AI Links must wait. Set dialogue_visible=true only when a text box is "
                 "visible now. During "
-                f"probe_target, P{npc_player_number} is the only scout. Route that Link to the "
-                "centre of one visible colored circular floor tile. P1, P3, and P4 must "
+                f"probe_target, P{npc_player_number} is the only scout. Continue up past the "
+                "NPC. Ignore the return warp grid below the starting position. Route that "
+                "Link to the centre of one tile in the complete forward warp grid. P1, P3, "
+                "and P4 must "
                 f"wait. P{npc_player_number} must not wait unless it is already centred on "
                 "the tile or a "
                 "visible response is in progress. Use two to six movement actions when the "
                 "route is clear. Change to reach_warps only after P2 causes a visible "
                 "response from that tile. During reach_warps, assign each AI Link a "
-                "separate visible warp or target. P1 remains under human control and must "
+                "separate tile in the same forward warp grid. Do not return to the lower "
+                "warp grid. P1 remains under human control and must "
                 "wait. A Link that "
                 "reaches a target must wait. Do not select an attack action. Move forward by "
                 "no more than one stage in one plan. "

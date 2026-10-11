@@ -8,6 +8,7 @@ from gbharness.agent.zelda import (
     FourSwordsVisualTargetNavigator,
     _link_position,
     _order_target_grid,
+    _target_grids,
     bootstrap_four_swords,
     first_training_reward_visible,
     four_swords_dialogue_visible,
@@ -134,8 +135,10 @@ def test_four_swords_npc_adjacent_uses_p2_visible_pixels() -> None:
 def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
     def view(target_y: int) -> RawFrame:
         current = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
-        current[target_y - 15 : target_y + 16, 105:136] = (250, 100, 20)
-        current[target_y - 9 : target_y + 10, 111:130] = (245, 245, 220)
+        for x in (72, 120):
+            for y in (target_y, target_y + 48):
+                current[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+                current[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
         packed = (
             ((current[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((current[:, :, 1].astype(np.uint16) >> 2) << 5)
@@ -152,9 +155,9 @@ def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
     far = view(125)
     assert four_swords_visual_target_plan(
         "probe_target", (far, far, far, far)
-    ) == {1: ("move_down",)}
+    ) == {1: ("move_up",)}
 
-    near = view(92)
+    near = view(40)
     assert four_swords_visual_target_plan(
         "probe_target", (near, near, near, near)
     ) == {1: ("wait",)}
@@ -165,12 +168,12 @@ def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
     blank = _composite(gameplay=False)
     blank_views = tuple(split_player_frames(blank, 4))
     assert four_swords_visual_target_plan("probe_target", blank_views) == {
-        1: ("move_down",)
+        1: ("move_up",)
     }
 
 
 def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -> None:
-    targets = ((55, 50), (175, 50), (55, 120), (175, 120))
+    targets = ((70, 40), (120, 40), (70, 88), (120, 88))
 
     def view(
         player: int,
@@ -214,12 +217,12 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     p2_unreached = FourSwordsVisualTargetNavigator()
     p2_target_below = list(views)
     p2_target_below[1] = view(1, (120, 80), ((120, 125),))
-    assert p2_unreached("reach_warps", tuple(p2_target_below))[1] == ("move_down",)
+    assert p2_unreached("reach_warps", tuple(p2_target_below))[1] == ("move_up",)
     assert 1 not in p2_unreached.reached_players
 
     views = (
         views[0],
-        view(1, (120, 80), (), ((120, 88),)),
+        view(1, (120, 80), targets[:-1], ((120, 88),)),
         views[2],
         views[3],
     )
@@ -236,12 +239,37 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     assert navigator("reach_warps", tuple(partial_views))[3] != ("wait",)
 
     reached_views = list(views)
-    for player in (1, 2, 3):
-        reached_views[player] = view(player, (120, 80), (), ((120, 88),))
+    reached_views[1] = view(1, (120, 80), targets[:-1], ((120, 88),))
+    reached_views[2] = view(
+        2,
+        (120, 80),
+        ((170, 88), (120, 136), (170, 136)),
+        ((120, 88),),
+    )
+    reached_views[3] = view(
+        3,
+        (120, 80),
+        ((120, 40), (170, 40), (170, 88)),
+        ((120, 88),),
+    )
 
     navigator("reach_warps", tuple(reached_views))
     reached_views = [
-        view(player, (120, 80), (), ((120, 88),), frame_index=1)
+        view(
+            player,
+            (120, 80),
+            (
+                targets[:-1]
+                if player == 1
+                else (
+                    ((170, 88), (120, 136), (170, 136))
+                    if player == 2
+                    else ((120, 40), (170, 40), (170, 88))
+                )
+            ),
+            ((120, 88),),
+            frame_index=1,
+        )
         if player in (1, 2, 3)
         else reached_views[player]
         for player in range(4)
@@ -262,6 +290,13 @@ def test_target_grid_order_ignores_small_vertical_jitter() -> None:
     )
 
 
+def test_target_grid_rejects_two_rows_from_different_warp_groups() -> None:
+    return_row = ((80, 120), (128, 119))
+    forward_row = ((80, 30), (128, 31))
+
+    assert _target_grids((*return_row, *forward_row)) == ()
+
+
 def test_link_position_does_not_include_a_nearby_target_ring() -> None:
     rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
     rgb[78:84, 116:124] = (220, 30, 25)
@@ -277,11 +312,17 @@ def test_link_position_does_not_include_a_nearby_target_ring() -> None:
 def test_visual_target_navigator_keeps_p2_on_a_covered_probe_target() -> None:
     navigator = FourSwordsVisualTargetNavigator()
 
-    def views(targets: tuple[tuple[int, int], ...]) -> tuple[RawFrame, ...]:
+    def views(
+        targets: tuple[tuple[int, int], ...],
+        active_targets: tuple[tuple[int, int], ...] = (),
+    ) -> tuple[RawFrame, ...]:
         rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
         for x, y in targets:
             rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
             rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        for x, y in active_targets:
+            rgb[y - 15 : y + 16, x - 15 : x + 16] = (173, 219, 255)
+            rgb[y - 9 : y + 10, x - 9 : x + 10] = (255, 251, 255)
         packed = (
             ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
@@ -296,9 +337,12 @@ def test_visual_target_navigator_keeps_p2_on_a_covered_probe_target() -> None:
         )
         return (frame, frame, frame, frame)
 
-    assert navigator("probe_target", views(((140, 88),))) == {1: ("move_right",)}
-    assert navigator.probe_target_reached(views(((65, 88),)))
-    assert navigator("probe_target", views(((65, 88),))) == {1: ("wait",)}
+    assert navigator("probe_target", views(((140, 88),))) == {1: ("move_up",)}
+    inactive = ((72, 40), (120, 40), (72, 88), (120, 88))
+    assert navigator("probe_target", views(inactive)) == {1: ("wait",)}
+    active = ((72, 40), (120, 40), (72, 88))
+    assert navigator.probe_target_reached(views(active, ((120, 88),)))
+    assert navigator("probe_target", views(active, ((120, 88),))) == {1: ("wait",)}
 
 
 def test_visual_target_navigator_faces_npc_and_recovers_from_failed_dialogue() -> None:

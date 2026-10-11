@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Final
 
 import numpy as np
@@ -168,17 +169,13 @@ def four_swords_visual_target_plan(
     """Move the P2 scout to a visible circular target from pixels only."""
     if stage != "probe_target" or len(views) < 2:
         return {}
-    targets = _orange_target_centres(to_rgb(views[1]))
-    if not targets:
-        # P2 finishes the NPC dialogue near the top wall. Move away from the
-        # NPC until one complete floor target enters the private viewport.
-        return {1: ("move_down",)}
+    rgb = to_rgb(views[1])
+    grid = _forward_target_grid(rgb)
+    if grid is None:
+        return {1: ("move_up",)}
 
-    player = (120, 88)
-    target = min(
-        targets,
-        key=lambda point: (point[0] - player[0]) ** 2 + (point[1] - player[1]) ** 2,
-    )
+    player = _link_position(rgb, 1) or (120, 88)
+    target = grid[3]
     if _squared_distance(player, target) <= 6 * 6:
         return {1: ("wait",)}
     return {1: _single_route_step(player, target)}
@@ -199,7 +196,6 @@ class FourSwordsVisualTargetNavigator:
     near_players: set[int] = field(default_factory=set)
     active_counts: dict[int, int] = field(default_factory=dict)
     active_frames: dict[int, int] = field(default_factory=dict)
-    probe_near_target: bool = False
     probe_reached: bool = False
     dialogue_attempts: int = 0
 
@@ -217,9 +213,9 @@ class FourSwordsVisualTargetNavigator:
         if stage != "reach_warps" or len(views) < 4:
             return {}
 
-        # Each private camera follows its Link near the screen centre. Assign
-        # P2 to the lower-right target, P3 to upper-left, and P4 to lower-left. Keep a Link
-        # still only when an active blue target ring is under that Link.
+        # Each private camera follows its Link near the screen centre. Move up
+        # until the complete forward grid is visible. Do not use the return
+        # grid below the starting position.
         target_slots = {1: 3, 2: 0, 3: 2}
         plans: dict[int, tuple[str, ...]] = {}
         for player in (1, 2, 3):
@@ -230,9 +226,15 @@ class FourSwordsVisualTargetNavigator:
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
+            grid = _forward_target_grid(rgb)
+            if grid is None:
+                plans[player] = ("move_up",)
+                continue
+            target = grid[self.assignments[player]]
             active_now = any(
-                _squared_distance(position, target) <= 12 * 12
-                for target in active_targets
+                _squared_distance(position, active) <= 12 * 12
+                and _squared_distance(target, active) <= 12 * 12
+                for active in active_targets
             )
             if active_now:
                 frame_index = views[player].index
@@ -246,19 +248,6 @@ class FourSwordsVisualTargetNavigator:
             self.active_counts[player] = 0
             self.active_frames.pop(player, None)
 
-            orange_targets = _orange_target_centres(rgb)
-            all_targets = _merge_target_centres(orange_targets, active_targets)
-            ordered_targets = _order_target_grid(all_targets)
-            if len(ordered_targets) >= 4:
-                target = ordered_targets[self.assignments[player]]
-            elif orange_targets:
-                target = min(
-                    orange_targets,
-                    key=lambda point: _squared_distance(point, position),
-                )
-            else:
-                plans[player] = ("move_down",)
-                continue
             self.tracked_targets[player] = target
             plans[player] = _precision_route_step(position, target)
         return plans
@@ -285,24 +274,23 @@ class FourSwordsVisualTargetNavigator:
         if len(views) < 2:
             return {}
 
-        anchor = (120, 88)
-        targets = _orange_target_centres(to_rgb(views[1]))
-        if not targets:
-            if self.probe_near_target:
-                self.probe_reached = True
-                return {1: ("wait",)}
-            return {1: ("move_down",)}
+        rgb = to_rgb(views[1])
+        position = _link_position(rgb, 1) or (120, 88)
+        grid = _forward_target_grid(rgb)
+        if grid is None:
+            return {1: ("move_up",)}
 
-        target = min(targets, key=lambda point: _squared_distance(point, anchor))
-        distance = _squared_distance(anchor, target)
-        if self.probe_near_target and distance > 30 * 30:
+        target = grid[3]
+        if any(
+            _squared_distance(position, active) <= 12 * 12
+            and _squared_distance(target, active) <= 12 * 12
+            for active in _active_target_centres(rgb)
+        ):
             self.probe_reached = True
             return {1: ("wait",)}
-        self.probe_near_target = distance <= 20 * 20
-        if distance <= 16 * 16:
-            self.probe_reached = True
+        if _squared_distance(position, target) <= 6 * 6:
             return {1: ("wait",)}
-        return {1: _single_route_step(anchor, target)}
+        return {1: _precision_route_step(position, target)}
 
     def _dialogue_plan(
         self,
@@ -491,6 +479,51 @@ def _order_target_grid(
     upper = sorted(vertical[:2], key=lambda point: point[0])
     lower = sorted(vertical[2:], key=lambda point: point[0])
     return tuple((*upper, *lower))
+
+
+def _target_grids(
+    targets: tuple[tuple[int, int], ...],
+) -> tuple[tuple[tuple[int, int], ...], ...]:
+    """Find compact two-by-two target grids in visible target centres."""
+    grids: list[tuple[tuple[int, int], ...]] = []
+    for candidate in combinations(targets, 4):
+        upper_left, upper_right, lower_left, lower_right = _order_target_grid(
+            candidate
+        )
+        horizontal = (
+            upper_right[0] - upper_left[0],
+            lower_right[0] - lower_left[0],
+        )
+        vertical = (
+            lower_left[1] - upper_left[1],
+            lower_right[1] - upper_right[1],
+        )
+        aligned = (
+            abs(upper_left[1] - upper_right[1]) <= 12
+            and abs(lower_left[1] - lower_right[1]) <= 12
+            and abs(upper_left[0] - lower_left[0]) <= 12
+            and abs(upper_right[0] - lower_right[0]) <= 12
+        )
+        if not aligned:
+            continue
+        if not all(28 <= gap <= 70 for gap in (*horizontal, *vertical)):
+            continue
+        grids.append((upper_left, upper_right, lower_left, lower_right))
+    return tuple(
+        sorted(
+            grids,
+            key=lambda grid: sum(point[1] for point in grid) / len(grid),
+        )
+    )
+
+
+def _forward_target_grid(rgb: np.ndarray) -> tuple[tuple[int, int], ...] | None:
+    targets = _merge_target_centres(
+        _orange_target_centres(rgb),
+        _active_target_centres(rgb),
+    )
+    grids = _target_grids(targets)
+    return grids[0] if grids else None
 
 
 def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
