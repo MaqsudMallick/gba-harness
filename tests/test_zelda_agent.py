@@ -388,6 +388,39 @@ def test_visible_reached_teammate_ignores_a_false_colour_match() -> None:
     ) == ("move_up",)
 
 
+def test_navigator_keeps_a_confirmed_forward_grid_during_marker_flicker() -> None:
+    navigator = FourSwordsVisualTargetNavigator()
+
+    def frame(marked: bool) -> RawFrame:
+        rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+        targets = ((70, 40), (120, 40), (70, 88), (120, 88))
+        for x, y in targets:
+            rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+            rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        if marked:
+            rgb[59:69, 90:100] = (222, 40, 165)
+        packed = (
+            ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (rgb[:, :, 2].astype(np.uint16) >> 3)
+        )
+        return RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=240,
+            height=160,
+            pitch=480,
+            index=0,
+        )
+
+    marked = frame(True)
+    flickered = frame(False)
+    first = navigator("reach_warps", (marked,) * 4)
+    second = navigator("reach_warps", (flickered,) * 4)
+
+    assert first[2] == ("move_left",)
+    assert second[2] == first[2]
+
+
 def test_target_grid_order_ignores_small_vertical_jitter() -> None:
     targets = ((160, 91), (110, 92), (160, 140), (110, 141))
 

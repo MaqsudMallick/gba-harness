@@ -207,6 +207,7 @@ class FourSwordsVisualTargetNavigator:
     reached_players: set[int] = field(default_factory=set)
     near_players: set[int] = field(default_factory=set)
     leaving_return_players: set[int] = field(default_factory=set)
+    forward_grid_players: set[int] = field(default_factory=set)
     active_counts: dict[int, int] = field(default_factory=dict)
     active_frames: dict[int, int] = field(default_factory=dict)
     probe_reached: bool = False
@@ -219,6 +220,7 @@ class FourSwordsVisualTargetNavigator:
         self.reached_players.clear()
         self.near_players.clear()
         self.leaving_return_players.clear()
+        self.forward_grid_players.clear()
         self.active_counts.clear()
         self.active_frames.clear()
         self.probe_reached = False
@@ -251,7 +253,12 @@ class FourSwordsVisualTargetNavigator:
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
+            visible_grid = _forward_target_grid(rgb)
             grid = _forward_marked_target_grid(rgb)
+            if grid is not None:
+                self.forward_grid_players.add(player)
+            elif player in self.forward_grid_players and visible_grid is not None:
+                grid = visible_grid
             if grid is None:
                 teammate_step = _visible_reached_teammate_step(
                     rgb,
@@ -262,7 +269,7 @@ class FourSwordsVisualTargetNavigator:
                 if teammate_step is not None:
                     plans[player] = teammate_step
                     continue
-                if player in self.leaving_return_players or _forward_target_grid(rgb) is not None:
+                if player in self.leaving_return_players or visible_grid is not None:
                     self.leaving_return_players.add(player)
                     plans[player] = ("move_down",)
                 else:
