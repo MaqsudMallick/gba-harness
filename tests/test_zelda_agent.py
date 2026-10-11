@@ -10,6 +10,7 @@ from gbharness.agent.zelda import (
     _link_position,
     _order_target_grid,
     _partial_portal_target,
+    _player_near_teammate,
     _target_grids,
     _visible_reached_teammate_step,
     _visible_wall_opening,
@@ -401,6 +402,8 @@ def test_new_room_holds_followers_until_the_scout_confirms_progress() -> None:
     first = frame((120, 170, 90), 0)
     second = frame((180, 130, 70), 1)
     third = frame((80, 150, 190), 2)
+    fourth = frame((170, 80, 150), 3)
+    fifth = frame((70, 190, 120), 4)
 
     assert navigator("explore_room", (first,) * 4) == {
         2: ("wait",),
@@ -410,8 +413,11 @@ def test_new_room_holds_followers_until_the_scout_confirms_progress() -> None:
         2: ("wait",),
         3: ("wait",),
     }
-    assert navigator("explore_room", (third,) * 4) == {}
+    assert navigator("explore_room", (third,) * 4) == {3: ("wait",)}
     assert navigator.explore_scout_ready
+    assert navigator("explore_room", (fourth,) * 4) == {3: ("wait",)}
+    assert navigator("explore_room", (fifth,) * 4) == {}
+    assert navigator.explore_follower_ready
 
     navigator.reset()
 
@@ -419,6 +425,22 @@ def test_new_room_holds_followers_until_the_scout_confirms_progress() -> None:
         2: ("wait",),
         3: ("wait",),
     }
+
+
+def test_room_collision_guard_detects_a_follower_near_the_scout() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    rgb[62:70, 116:124] = (230, 180, 40)
+    rgb[70:79, 116:124] = (220, 30, 25)
+    rgb[64:72, 136:144] = (230, 180, 40)
+    rgb[72:81, 136:144] = (30, 70, 220)
+
+    assert _player_near_teammate(rgb, 2, (1,))
+
+    rgb[64:81, 136:144] = (130, 180, 110)
+    rgb[64:72, 196:204] = (230, 180, 40)
+    rgb[72:81, 196:204] = (30, 70, 220)
+
+    assert not _player_near_teammate(rgb, 2, (1,))
 
 
 def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None:

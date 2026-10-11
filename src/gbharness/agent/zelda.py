@@ -219,6 +219,9 @@ class FourSwordsVisualTargetNavigator:
     explore_scout_view: np.ndarray | None = field(default=None, repr=False)
     explore_scout_progress: int = 0
     explore_scout_ready: bool = False
+    explore_follower_view: np.ndarray | None = field(default=None, repr=False)
+    explore_follower_progress: int = 0
+    explore_follower_ready: bool = False
 
     def reset(self) -> None:
         """Clear first-room visual state before the team enters a new room."""
@@ -239,6 +242,9 @@ class FourSwordsVisualTargetNavigator:
         self.explore_scout_view = None
         self.explore_scout_progress = 0
         self.explore_scout_ready = False
+        self.explore_follower_view = None
+        self.explore_follower_progress = 0
+        self.explore_follower_ready = False
 
     def __call__(
         self,
@@ -406,18 +412,36 @@ class FourSwordsVisualTargetNavigator:
         views: tuple[RawFrame, ...],
     ) -> dict[int, tuple[str, ...]]:
         """Keep followers still until P2 confirms visual route progress."""
-        if self.explore_scout_ready or len(views) < 4:
+        if len(views) < 4:
             return {}
-
-        current = to_rgb(views[1])
-        previous = self.explore_scout_view
-        self.explore_scout_view = current.copy()
-        if previous is not None and _scene_change_fraction(previous, current) >= 0.08:
-            self.explore_scout_progress += 1
-        if self.explore_scout_progress >= 2:
+        if not self.explore_scout_ready:
+            current = to_rgb(views[1])
+            previous = self.explore_scout_view
+            self.explore_scout_view = current.copy()
+            if previous is not None and _scene_change_fraction(previous, current) >= 0.08:
+                self.explore_scout_progress += 1
+            if self.explore_scout_progress < 2:
+                return {2: ("wait",), 3: ("wait",)}
             self.explore_scout_ready = True
-            return {}
-        return {2: ("wait",), 3: ("wait",)}
+
+        plans: dict[int, tuple[str, ...]] = {}
+        p3_view = to_rgb(views[2])
+        if not self.explore_follower_ready:
+            previous = self.explore_follower_view
+            self.explore_follower_view = p3_view.copy()
+            if previous is not None and _scene_change_fraction(previous, p3_view) >= 0.08:
+                self.explore_follower_progress += 1
+            if self.explore_follower_progress < 2:
+                plans[3] = ("wait",)
+            else:
+                self.explore_follower_ready = True
+
+        if _player_near_teammate(p3_view, 2, (1,)):
+            plans[2] = ("wait",)
+        p4_view = to_rgb(views[3])
+        if _player_near_teammate(p4_view, 3, (1, 2)):
+            plans[3] = ("wait",)
+        return plans
 
     def _reach_npc_plan(
         self,
@@ -511,6 +535,23 @@ def _scene_change_fraction(previous: np.ndarray, current: np.ndarray) -> float:
         axis=2,
     )
     return float(np.count_nonzero(difference >= 24)) / float(difference.size)
+
+
+def _player_near_teammate(
+    rgb: np.ndarray,
+    player: int,
+    teammates: tuple[int, ...],
+) -> bool:
+    """Detect a teammate close enough to be pushed by the player."""
+    position = _link_position(rgb, player)
+    if position is None:
+        return False
+    return any(
+        teammate_position is not None
+        and _squared_distance(position, teammate_position) <= 28 * 28
+        for teammate in teammates
+        if (teammate_position := _link_position(rgb, teammate)) is not None
+    )
 
 
 def _private_dialogue_visible(rgb: np.ndarray) -> bool:

@@ -204,6 +204,11 @@ class VertexTeamDecisionProvider:
                     "collectible that leads away from the entrance. State the visual event "
                     "that requires a new plan in replan_trigger. Keep stage=explore_room. "
                     "P1 is human. "
+                    "Assign distinct landmarks or lanes to the three bots. Do not make a "
+                    "follower trace the scout route when the scout occupies its endpoint. "
+                    "Keep a follower still when it is within one character width of a "
+                    "stationary teammate. Move the scout aside before a follower enters a "
+                    "narrow shared corridor. "
                     "Give no automated P1 plan. Set terminal=true only when the screenshot "
                     "shows that the room objective is complete. Do not use a walkthrough. "
                     "A two-by-two group of four large circles with a centre character or "
@@ -347,6 +352,14 @@ class VertexTeamDecisionProvider:
                         facing = "wait"
                     plan = (facing, "interact", "wait", "wait", "wait", "wait")
             if self.navigation_only and stage == "probe_target" and player != npc_actor:
+                plan = ("wait",)
+            if (
+                self.navigation_only
+                and stage == "explore_room"
+                and player != npc_actor
+                and plan == plans.get(npc_actor)
+                and any(action != "wait" for action in plan)
+            ):
                 plan = ("wait",)
             plans[player] = plan
             decisions[player] = Decision(
