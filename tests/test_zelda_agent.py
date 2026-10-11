@@ -10,6 +10,7 @@ from gbharness.agent.zelda import (
     _forward_portal_search_step,
     _link_position,
     _order_target_grid,
+    _partial_portal_target,
     _target_grids,
     _visible_reached_teammate_step,
     _visible_wall_opening,
@@ -292,6 +293,8 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
 
     displaced_views = list(reached_views)
     displaced_views[1] = view(1, (120, 80), targets[1:], ((70, 40),))
+    for _ in range(5):
+        assert navigator("reach_warps", tuple(displaced_views))[1] == ("wait",)
     displaced_plan = navigator("reach_warps", tuple(displaced_views))
     assert displaced_plan[1] != ("wait",)
     assert 1 not in navigator.reached_players
@@ -392,6 +395,19 @@ def test_visible_reached_teammate_ignores_a_false_colour_match() -> None:
         (119, 86),
         {1, 2},
     ) == ("move_up",)
+
+
+def test_partial_portal_row_preserves_an_assigned_route() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    for x, y in ((67, 36), (113, 38)):
+        rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+        rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+
+    target = _partial_portal_target(rgb, 2, (114, 88))
+
+    assert target is not None
+    assert target[0] == 67
+    assert _partial_portal_target(rgb, 0, None) == (67, 36)
 
 
 def test_navigator_keeps_a_confirmed_forward_grid_during_marker_flicker() -> None:

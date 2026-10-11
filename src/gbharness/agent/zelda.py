@@ -208,6 +208,7 @@ class FourSwordsVisualTargetNavigator:
     near_players: set[int] = field(default_factory=set)
     leaving_return_players: set[int] = field(default_factory=set)
     forward_grid_players: set[int] = field(default_factory=set)
+    reached_misses: dict[int, int] = field(default_factory=dict)
     active_counts: dict[int, int] = field(default_factory=dict)
     active_frames: dict[int, int] = field(default_factory=dict)
     probe_reached: bool = False
@@ -221,6 +222,7 @@ class FourSwordsVisualTargetNavigator:
         self.near_players.clear()
         self.leaving_return_players.clear()
         self.forward_grid_players.clear()
+        self.reached_misses.clear()
         self.active_counts.clear()
         self.active_frames.clear()
         self.probe_reached = False
@@ -252,9 +254,16 @@ class FourSwordsVisualTargetNavigator:
             active_targets = _active_target_centres(rgb)
             if player in self.reached_players:
                 if any(_squared_distance(position, active) <= 12 * 12 for active in active_targets):
+                    self.reached_misses[player] = 0
+                    plans[player] = ("wait",)
+                    continue
+                misses = self.reached_misses.get(player, 0) + 1
+                self.reached_misses[player] = misses
+                if misses < 6:
                     plans[player] = ("wait",)
                     continue
                 self.reached_players.discard(player)
+                self.reached_misses.pop(player, None)
                 self.active_counts[player] = 0
                 self.active_frames.pop(player, None)
             visible_grid = _forward_target_grid(rgb)
@@ -264,6 +273,20 @@ class FourSwordsVisualTargetNavigator:
             elif player in self.forward_grid_players and visible_grid is not None:
                 grid = visible_grid
             if grid is None:
+                previous_target = self.tracked_targets.get(player)
+                partial_target = (
+                    _partial_portal_target(
+                        rgb,
+                        self.assignments[player],
+                        previous_target,
+                    )
+                    if previous_target is not None or self.reached_players
+                    else None
+                )
+                if partial_target is not None:
+                    self.tracked_targets[player] = partial_target
+                    plans[player] = _precision_route_step(position, partial_target)
+                    continue
                 teammate_step = _visible_reached_teammate_step(
                     rgb,
                     player,
@@ -293,6 +316,7 @@ class FourSwordsVisualTargetNavigator:
                     self.active_frames[player] = frame_index
                 if self.active_counts[player] >= 2:
                     self.reached_players.add(player)
+                    self.reached_misses[player] = 0
                 plans[player] = ("wait",)
                 continue
             self.active_counts[player] = 0
@@ -500,6 +524,55 @@ def _visible_reached_teammate_step(
         return None
     _, target = max(candidates)
     return _precision_route_step(position, target)
+
+
+def _partial_portal_target(
+    rgb: np.ndarray,
+    slot: int,
+    previous: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    """Infer an assigned target from one visible portal row or column."""
+    if previous is None:
+        orange_targets = _orange_target_centres(rgb)
+        if not orange_targets:
+            return None
+        ordered = sorted(orange_targets, key=lambda point: (point[0], abs(point[1] - 88)))
+        return ordered[0] if slot % 2 == 0 else ordered[-1]
+    targets = _merge_target_centres(
+        _orange_target_centres(rgb),
+        _active_target_centres(rgb),
+    )
+    candidates: list[tuple[int, tuple[int, int]]] = []
+    for first, second in combinations(targets, 2):
+        dx = abs(first[0] - second[0])
+        dy = abs(first[1] - second[1])
+        if 28 <= dx <= 70 and dy <= 12:
+            left, right = sorted((first, second))
+            row_y = (left[1] + right[1]) // 2
+            for top_y in (row_y, row_y - dx):
+                grid = (
+                    (left[0], top_y),
+                    (right[0], top_y),
+                    (left[0], top_y + dx),
+                    (right[0], top_y + dx),
+                )
+                target = grid[slot]
+                candidates.append((_squared_distance(target, previous), target))
+        if 28 <= dy <= 70 and dx <= 12:
+            upper, lower = sorted((first, second), key=lambda point: point[1])
+            column_x = (upper[0] + lower[0]) // 2
+            for left_x in (column_x, column_x - dy):
+                grid = (
+                    (left_x, upper[1]),
+                    (left_x + dy, upper[1]),
+                    (left_x, lower[1]),
+                    (left_x + dy, lower[1]),
+                )
+                target = grid[slot]
+                candidates.append((_squared_distance(target, previous), target))
+    if not candidates:
+        return None
+    return min(candidates)[1]
 
 
 def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
