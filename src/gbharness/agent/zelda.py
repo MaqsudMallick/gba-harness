@@ -149,15 +149,8 @@ def four_swords_npc_adjacent(views: tuple[RawFrame, ...]) -> bool:
     """Detect the pink NPC next to the P2 screen centre from visible pixels."""
     if len(views) < 2:
         return False
-    rgb = to_rgb(views[1])
-    nearby = rgb[50:91, 90:151]
-    pink = (
-        (nearby[:, :, 0] > 140)
-        & (nearby[:, :, 2] > 100)
-        & (nearby[:, :, 0] > nearby[:, :, 1] * 1.25)
-        & (nearby[:, :, 2] > nearby[:, :, 1] * 1.10)
-    )
-    return int(np.count_nonzero(pink)) >= 20
+    offset = _pink_npc_offset(to_rgb(views[1]))
+    return offset is not None and offset[0] ** 2 + offset[1] ** 2 <= 30 * 30
 
 
 def four_swords_visual_target_plan(

@@ -116,6 +116,10 @@ def test_four_swords_npc_adjacent_uses_p2_visible_pixels() -> None:
 
     views = tuple(split_player_frames(frame(), 4))
     assert not four_swords_npc_adjacent(views)
+    rgb[45:55, 354:364] = (222, 40, 165)
+    views = tuple(split_player_frames(frame(), 4))
+    assert not four_swords_npc_adjacent(views)
+    rgb[45:55, 354:364] = (130, 180, 110)
     rgb[68:78, 354:364] = (222, 40, 165)
     views = tuple(split_player_frames(frame(), 4))
     assert four_swords_npc_adjacent(views)
