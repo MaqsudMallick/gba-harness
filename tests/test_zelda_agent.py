@@ -171,6 +171,7 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
         position: tuple[int, int],
         visible_targets: tuple[tuple[int, int], ...] = targets,
         active_targets: tuple[tuple[int, int], ...] = (),
+        frame_index: int = 0,
     ) -> RawFrame:
         rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
         for x, y in visible_targets:
@@ -196,7 +197,7 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
             width=240,
             height=160,
             pitch=480,
-            index=0,
+            index=frame_index,
         )
 
     navigator = FourSwordsVisualTargetNavigator()
@@ -232,6 +233,13 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     for player in (1, 2, 3):
         reached_views[player] = view(player, (120, 80), (), ((120, 88),))
 
+    navigator("reach_warps", tuple(reached_views))
+    reached_views = [
+        view(player, (120, 80), (), ((120, 88),), frame_index=1)
+        if player in (1, 2, 3)
+        else reached_views[player]
+        for player in range(4)
+    ]
     reached_plans = navigator("reach_warps", tuple(reached_views))
     assert reached_plans == {1: ("wait",), 2: ("wait",), 3: ("wait",)}
     assert navigator.all_assigned_players_reached(tuple(reached_views))

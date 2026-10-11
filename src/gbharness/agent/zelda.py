@@ -189,6 +189,8 @@ class FourSwordsVisualTargetNavigator:
     tracked_targets: dict[int, tuple[int, int]] = field(default_factory=dict)
     reached_players: set[int] = field(default_factory=set)
     near_players: set[int] = field(default_factory=set)
+    active_counts: dict[int, int] = field(default_factory=dict)
+    active_frames: dict[int, int] = field(default_factory=dict)
     probe_near_target: bool = False
     probe_reached: bool = False
     dialogue_attempts: int = 0
@@ -208,7 +210,7 @@ class FourSwordsVisualTargetNavigator:
         # Each private camera follows its Link near the screen centre. Assign
         # P2 to a lower target and P3-P4 to the two upper targets. Keep a Link
         # still only when an active blue target ring is under that Link.
-        target_slots = {1: 2, 2: 0, 3: 1}
+        target_slots = {1: 3, 2: 0, 3: 1}
         plans: dict[int, tuple[str, ...]] = {}
         for player in (1, 2, 3):
             self.assignments.setdefault(player, target_slots[player])
@@ -218,20 +220,37 @@ class FourSwordsVisualTargetNavigator:
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
-            if any(
+            active_now = any(
                 _squared_distance(position, target) <= 12 * 12
                 for target in active_targets
-            ):
-                self.reached_players.add(player)
+            )
+            if active_now:
+                frame_index = views[player].index
+                if self.active_frames.get(player) != frame_index:
+                    self.active_counts[player] = self.active_counts.get(player, 0) + 1
+                    self.active_frames[player] = frame_index
+                if self.active_counts[player] >= 2:
+                    self.reached_players.add(player)
                 plans[player] = ("wait",)
                 continue
-            targets = _orange_target_centres(rgb)
-            if not targets:
+            self.active_counts[player] = 0
+            self.active_frames.pop(player, None)
+
+            orange_targets = _orange_target_centres(rgb)
+            all_targets = _merge_target_centres(orange_targets, active_targets)
+            ordered_targets = sorted(all_targets, key=lambda point: (point[1], point[0]))
+            if len(ordered_targets) >= 4:
+                target = ordered_targets[self.assignments[player]]
+            elif orange_targets:
+                target = min(
+                    orange_targets,
+                    key=lambda point: _squared_distance(point, position),
+                )
+            else:
                 plans[player] = ("move_down",)
                 continue
-            target = min(targets, key=lambda point: _squared_distance(point, position))
             self.tracked_targets[player] = target
-            plans[player] = _single_route_step(position, target)
+            plans[player] = _precision_route_step(position, target)
         return plans
 
     def _probe_plan(
@@ -358,6 +377,19 @@ def _single_route_step(
     return ("move_down" if dy > 0 else "move_up",)
 
 
+def _precision_route_step(
+    player: tuple[int, int],
+    target: tuple[int, int],
+) -> tuple[str, ...]:
+    """Use a short direction tap near a target to prevent overshoot."""
+    dx = target[0] - player[0]
+    dy = target[1] - player[1]
+    prefix = "face" if dx * dx + dy * dy <= 28 * 28 else "move"
+    if abs(dx) > abs(dy):
+        return (f"{prefix}_{'right' if dx > 0 else 'left'}",)
+    return (f"{prefix}_{'down' if dy > 0 else 'up'}",)
+
+
 def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
     red = rgb[:, :, 0]
     green = rgb[:, :, 1]
@@ -395,6 +427,17 @@ def _active_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
             continue
         centres.append((int(np.mean(xs)), int(np.mean(ys))))
     return tuple(centres)
+
+
+def _merge_target_centres(
+    first: tuple[tuple[int, int], ...],
+    second: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], ...]:
+    merged: list[tuple[int, int]] = []
+    for target in (*first, *second):
+        if all(_squared_distance(target, existing) > 12 * 12 for existing in merged):
+            merged.append(target)
+    return tuple(merged)
 
 
 def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
