@@ -356,8 +356,28 @@ def test_reach_warps_preserves_the_scouts_confirmed_probe_target() -> None:
 
     assert plan[1] == ("wait",)
     assert 1 in navigator.forward_grid_players
+    assert 1 in navigator.reached_players
     assert 1 not in navigator.leaving_return_players
     assert navigator.leaving_return_players == {2, 3}
+
+    blank = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    blank_packed = (
+        ((blank[:, :, 0].astype(np.uint16) >> 3) << 11)
+        | ((blank[:, :, 1].astype(np.uint16) >> 2) << 5)
+        | (blank[:, :, 2].astype(np.uint16) >> 3)
+    )
+    blank_frame = RawFrame(
+        data=blank_packed.astype("<u2").tobytes(),
+        width=240,
+        height=160,
+        pitch=480,
+        index=1,
+    )
+
+    next_plan = navigator("reach_warps", (blank_frame,) * 4)
+
+    assert next_plan[1] == ("wait",)
+    assert 1 in navigator.reached_players
 
 
 def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None:

@@ -266,6 +266,11 @@ class FourSwordsVisualTargetNavigator:
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
+            if player == 1 and self.probe_reached:
+                self.reached_players.add(player)
+                self.reached_misses[player] = 0
+                plans[player] = ("wait",)
+                continue
             visible_grid = _forward_target_grid(rgb)
             marked_grid = _forward_marked_target_grid(rgb)
             visible_targets = _merge_target_centres(
