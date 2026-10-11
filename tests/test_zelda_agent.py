@@ -11,6 +11,7 @@ from gbharness.agent.zelda import (
     _link_position,
     _order_target_grid,
     _target_grids,
+    _visible_reached_teammate_step,
     _visible_wall_opening,
     bootstrap_four_swords,
     first_training_reward_visible,
@@ -355,6 +356,31 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
 
     assert first == {1: ("move_down",), 2: ("move_down",), 3: ("move_down",)}
     assert second == first
+
+
+def test_visible_reached_teammate_routes_a_bot_around_a_wall() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+
+    def draw_link(player: int, position: tuple[int, int]) -> None:
+        colours = {
+            1: (220, 30, 25),
+            2: (30, 70, 220),
+            3: (180, 40, 190),
+        }
+        x, y = position
+        rgb[y - 13 : y + 1, x - 4 : x + 5] = colours[player]
+        rgb[y - 21 : y - 13, x - 4 : x + 5] = (245, 190, 35)
+
+    draw_link(1, (122, 87))
+    draw_link(2, (70, 116))
+    draw_link(3, (116, 80))
+
+    assert _visible_reached_teammate_step(
+        rgb,
+        3,
+        (116, 80),
+        {1, 2},
+    ) == ("move_left",)
 
 
 def test_target_grid_order_ignores_small_vertical_jitter() -> None:

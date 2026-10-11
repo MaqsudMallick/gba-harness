@@ -253,6 +253,15 @@ class FourSwordsVisualTargetNavigator:
             active_targets = _active_target_centres(rgb)
             grid = _forward_marked_target_grid(rgb)
             if grid is None:
+                teammate_step = _visible_reached_teammate_step(
+                    rgb,
+                    player,
+                    position,
+                    self.reached_players,
+                )
+                if teammate_step is not None:
+                    plans[player] = teammate_step
+                    continue
                 if player in self.leaving_return_players or _forward_target_grid(rgb) is not None:
                     self.leaving_return_players.add(player)
                     plans[player] = ("move_down",)
@@ -451,6 +460,30 @@ def _precision_route_step(
     if abs(dx) > abs(dy):
         return (f"{prefix}_{'right' if dx > 0 else 'left'}",)
     return (f"{prefix}_{'down' if dy > 0 else 'up'}",)
+
+
+def _visible_reached_teammate_step(
+    rgb: np.ndarray,
+    player: int,
+    position: tuple[int, int],
+    reached_players: set[int],
+) -> tuple[str, ...] | None:
+    """Move toward a visible teammate that reached the forward portal."""
+    candidates: list[tuple[int, tuple[int, int]]] = []
+    for teammate in reached_players:
+        if teammate == player:
+            continue
+        teammate_position = _link_position(rgb, teammate)
+        if teammate_position is None:
+            continue
+        distance = _squared_distance(position, teammate_position)
+        if distance <= 24 * 24:
+            continue
+        candidates.append((distance, teammate_position))
+    if not candidates:
+        return None
+    _, target = max(candidates)
+    return _precision_route_step(position, target)
 
 
 def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
