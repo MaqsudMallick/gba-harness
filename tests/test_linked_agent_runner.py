@@ -20,6 +20,7 @@ from gbharness.agent.team import TeamDecision, TeamDecisionRequest
 from gbharness.agent.zelda import FOUR_SWORDS_POLICY
 from gbharness.buttons import Button
 from gbharness.multiplayer import LinkedSession
+from gbharness.observability import io_attributes
 from gbharness.vision.capture import FrameLatch, RawFrame
 
 
@@ -133,18 +134,24 @@ class RecordingTelemetry:
         name: str,
         kind: str,
         *,
-        capture_input: bool = False,
-        capture_output: bool = False,
+        input_value: object | None = None,
+        output_value: object | None = None,
         attributes: Mapping[str, object] | None = None,
     ) -> Iterator[str]:
-        del capture_input, capture_output
+        recorded = dict(attributes or {})
+        recorded.update(
+            io_attributes(kind, input_value=input_value, output_value=output_value)
+        )
         with self._lock:
-            self.spans.append((name, kind, dict(attributes or {})))
+            self.spans.append((name, kind, recorded))
         yield name
 
     def annotate(self, span: str, attributes: Mapping[str, object]) -> None:
         with self._lock:
             self.annotations.setdefault(span, {}).update(attributes)
+
+    def record_output(self, span: str, kind: str, value: object) -> None:
+        self.annotate(span, io_attributes(kind, output_value=value))
 
     def log(self, template: str, **values: object) -> None:
         del template, values

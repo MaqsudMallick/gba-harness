@@ -290,6 +290,17 @@ def main(argv: list[str] | None = None) -> int:
                     with telemetry.span(
                         "four_swords_puzzle_attempt",
                         "WORKFLOW",
+                        input_value={
+                            "game": FOUR_SWORDS_POLICY.name,
+                            "objective": FOUR_SWORDS_POLICY.goal,
+                            "participants": (
+                                "one human, three Vertex agents"
+                                if human_player
+                                else "four Vertex agents"
+                            ),
+                            "human_player": f"P{human_player}" if human_player else None,
+                            "models": models,
+                        },
                         attributes={
                             "game": FOUR_SWORDS_POLICY.name,
                             "objective": FOUR_SWORDS_POLICY.goal,
@@ -330,6 +341,25 @@ def main(argv: list[str] | None = None) -> int:
                                 "run.model_calls": episode.model_calls,
                                 "run.input_tokens": episode.input_tokens,
                                 "run.output_tokens": episode.output_tokens,
+                            },
+                        )
+                        telemetry.record_output(
+                            root_span,
+                            "WORKFLOW",
+                            {
+                                "status": episode.status,
+                                "turns": len(episode.turns),
+                                "frames": episode.total_frames,
+                                "model_calls": episode.model_calls,
+                                "tokens": {
+                                    "input": episode.input_tokens,
+                                    "output": episode.output_tokens,
+                                },
+                                "last_instruction": (
+                                    episode.turns[-1].team_instruction
+                                    if episode.turns
+                                    else ""
+                                ),
                             },
                         )
                         return episode
@@ -448,12 +478,9 @@ def _run_live(
             with runner.telemetry.span(
                 f"player_{human_player}_free_play_action",
                 "TOOL",
+                input_value={"action": action, "phase": "free play after agent episode"},
                 attributes={
                     "neatlogs.tool.name": "human_keyboard_controller",
-                    "neatlogs.tool.description": (
-                        "Execute human free play after the bounded agent episode"
-                    ),
-                    "neatlogs.tool.parameters": action,
                     "player.number": human_player,
                     "free_play.action_index": action_count + 1,
                     "frame.before": runner.session.frame,
@@ -467,6 +494,14 @@ def _run_live(
                         "frame.after": result.total_frames,
                         "frames.advanced": result.frames_advanced,
                         "emulation.ended": result.emulation_ended,
+                    },
+                )
+                runner.telemetry.record_output(
+                    action_span,
+                    "TOOL",
+                    {
+                        "frames_advanced": result.frames_advanced,
+                        "emulation_ended": result.emulation_ended,
                     },
                 )
             phase[0] = f"P{human_player} FREE PLAY — {action}"

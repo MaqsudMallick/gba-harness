@@ -229,13 +229,28 @@ class MarioAutopilot:
     def run(self) -> EpisodeResult:
         records: list[TurnRecord] = []
         status: Literal["completed", "turn_limit", "stopped"] = "turn_limit"
-        with self.telemetry.span("game_agent_episode", "WORKFLOW"):
+        with self.telemetry.span(
+            "game_agent_episode",
+            "WORKFLOW",
+            input_value={
+                "game": "super-mario-bros-world-1-1",
+                "goal": "clear World 1-1 and reach the World 1-2 card",
+                "provider": "local-vision",
+                "turn_limit": self.config.max_turns,
+            },
+        ) as episode_span:
             self.telemetry.log(
                 "episode started for {game} with {provider}",
                 game="super-mario-bros-world-1-1",
                 provider="local-vision",
             )
-            with self.telemetry.span("boot_and_start_level", "TOOL"):
+            with self.telemetry.span(
+                "boot_and_start_level",
+                "TOOL",
+                input_value={"sequence": "wait 180, tap start, wait 150, hold right+b"},
+                output_value={"started": "level running with right+b held"},
+                attributes={"neatlogs.tool.name": "gba_controller"},
+            ):
                 self.session.submit(wait(180))
                 self.session.submit(tap("start", hold_frames=4, gap_frames=10))
                 self.session.submit(wait(150))
@@ -256,8 +271,21 @@ class MarioAutopilot:
                             frame=self.session.frame,
                         )
                         break
-                    with self.telemetry.span("execute_controller_action", "TOOL"):
+                    with self.telemetry.span(
+                        "execute_controller_action",
+                        "TOOL",
+                        input_value={"action": decision.action, "scene": decision.scene},
+                        attributes={"neatlogs.tool.name": "gba_controller"},
+                    ) as controller_span:
                         result = self.session.submit(LOCAL_ACTIONS[decision.action])
+                        self.telemetry.record_output(
+                            controller_span,
+                            "TOOL",
+                            {
+                                "frames_advanced": result.frames_advanced,
+                                "frame": result.total_frames,
+                            },
+                        )
                     record = TurnRecord(
                         turn=turn,
                         frame=result.total_frames,
@@ -281,6 +309,16 @@ class MarioAutopilot:
                         self.on_turn(record)
             finally:
                 self.session.submit(release(["right", "b"]))
+                self.telemetry.record_output(
+                    episode_span,
+                    "WORKFLOW",
+                    {
+                        "status": status,
+                        "turns": len(records),
+                        "frames": self.session.frame,
+                        "last_scene": records[-1].scene if records else "",
+                    },
+                )
 
         return EpisodeResult(
             status=status,
