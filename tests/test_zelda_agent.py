@@ -225,6 +225,8 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
         )
 
     navigator = FourSwordsVisualTargetNavigator()
+    navigator.portal_search_started = True
+    navigator.forward_grid_players.update((1, 2, 3))
     positions = {1: (120, 80), 2: (120, 80), 3: (120, 80)}
     views = tuple(view(max(index, 1), positions.get(index, (120, 80))) for index in range(4))
     p2_unreached = FourSwordsVisualTargetNavigator()
@@ -362,9 +364,14 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
     blank_view = frame(False, 1)
     first = navigator("reach_warps", (return_view,) * 4)
     second = navigator("reach_warps", (blank_view,) * 4)
+    third = navigator("reach_warps", (blank_view,) * 4)
+    forward = navigator("reach_warps", (return_view,) * 4)
 
-    assert first == {1: ("move_down",), 2: ("move_down",), 3: ("move_down",)}
+    assert first == {1: ("move_up",), 2: ("move_up",), 3: ("move_up",)}
     assert second == first
+    assert third == first
+    assert all(player not in navigator.leaving_return_players for player in (1, 2, 3))
+    assert forward != first
 
 
 def test_visible_reached_teammate_ignores_a_false_colour_match() -> None:
@@ -412,6 +419,8 @@ def test_partial_portal_row_preserves_an_assigned_route() -> None:
 
 def test_navigator_keeps_a_confirmed_forward_grid_during_marker_flicker() -> None:
     navigator = FourSwordsVisualTargetNavigator()
+    navigator.portal_search_started = True
+    navigator.forward_grid_players.update((1, 2, 3))
 
     def frame(marked: bool) -> RawFrame:
         rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)

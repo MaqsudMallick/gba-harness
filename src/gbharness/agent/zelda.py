@@ -209,6 +209,9 @@ class FourSwordsVisualTargetNavigator:
     leaving_return_players: set[int] = field(default_factory=set)
     forward_grid_players: set[int] = field(default_factory=set)
     reached_misses: dict[int, int] = field(default_factory=dict)
+    return_grid_absent_counts: dict[int, int] = field(default_factory=dict)
+    cleared_return_players: set[int] = field(default_factory=set)
+    portal_search_started: bool = False
     active_counts: dict[int, int] = field(default_factory=dict)
     active_frames: dict[int, int] = field(default_factory=dict)
     probe_reached: bool = False
@@ -223,6 +226,9 @@ class FourSwordsVisualTargetNavigator:
         self.leaving_return_players.clear()
         self.forward_grid_players.clear()
         self.reached_misses.clear()
+        self.return_grid_absent_counts.clear()
+        self.cleared_return_players.clear()
+        self.portal_search_started = False
         self.active_counts.clear()
         self.active_frames.clear()
         self.probe_reached = False
@@ -242,16 +248,46 @@ class FourSwordsVisualTargetNavigator:
         if stage != "reach_warps" or len(views) < 4:
             return {}
 
+        if not self.portal_search_started:
+            self.portal_search_started = True
+            self.leaving_return_players.update((1, 2, 3))
+
         # Each private camera follows its Link near the screen centre. Move up
         # until the complete forward grid is visible. Do not use the return
         # grid below the starting position.
         target_slots = {1: 3, 2: 0, 3: 2}
         plans: dict[int, tuple[str, ...]] = {}
         for player in (1, 2, 3):
+            grid: tuple[tuple[int, int], ...] | None = None
             self.assignments.setdefault(player, target_slots[player])
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
+            visible_grid = _forward_target_grid(rgb)
+            visible_targets = _merge_target_centres(
+                _orange_target_centres(rgb),
+                active_targets,
+            )
+            if player in self.leaving_return_players:
+                portal_visible = len(visible_targets) >= 2
+                if player not in self.cleared_return_players:
+                    if portal_visible:
+                        self.return_grid_absent_counts[player] = 0
+                    else:
+                        absent = self.return_grid_absent_counts.get(player, 0) + 1
+                        self.return_grid_absent_counts[player] = absent
+                        if absent >= 2:
+                            self.cleared_return_players.add(player)
+                    plans[player] = _forward_exploration_step(rgb, position)
+                    continue
+                if visible_grid is None:
+                    plans[player] = _forward_exploration_step(rgb, position)
+                    continue
+                self.leaving_return_players.discard(player)
+                self.forward_grid_players.add(player)
+                grid = visible_grid
+            else:
+                grid = visible_grid if player in self.forward_grid_players else None
             if player in self.reached_players:
                 if any(_squared_distance(position, active) <= 12 * 12 for active in active_targets):
                     self.reached_misses[player] = 0
@@ -266,12 +302,6 @@ class FourSwordsVisualTargetNavigator:
                 self.reached_misses.pop(player, None)
                 self.active_counts[player] = 0
                 self.active_frames.pop(player, None)
-            visible_grid = _forward_target_grid(rgb)
-            grid = _forward_marked_target_grid(rgb)
-            if grid is not None:
-                self.forward_grid_players.add(player)
-            elif player in self.forward_grid_players and visible_grid is not None:
-                grid = visible_grid
             if grid is None:
                 previous_target = self.tracked_targets.get(player)
                 partial_target = (
@@ -296,11 +326,7 @@ class FourSwordsVisualTargetNavigator:
                 if teammate_step is not None:
                     plans[player] = teammate_step
                     continue
-                if player in self.leaving_return_players or visible_grid is not None:
-                    self.leaving_return_players.add(player)
-                    plans[player] = ("move_down",)
-                else:
-                    plans[player] = _forward_exploration_step(rgb, position)
+                plans[player] = _forward_exploration_step(rgb, position)
                 continue
             self.leaving_return_players.discard(player)
             target = grid[self.assignments[player]]
