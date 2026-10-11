@@ -354,21 +354,39 @@ def _private_dialogue_visible(rgb: np.ndarray) -> bool:
 
 
 def _pink_npc_offset(rgb: np.ndarray) -> tuple[int, int] | None:
-    region_x = 80
-    region_y = 42
-    nearby = rgb[region_y:96, region_x:161]
+    npc = _pink_npc_position(rgb)
+    if npc is None:
+        return None
+    player = _link_position(rgb, 1) or (120, 88)
+    return npc[0] - player[0], npc[1] - player[1]
+
+
+def _pink_npc_position(rgb: np.ndarray) -> tuple[int, int] | None:
+    """Find the upper pink NPC without selecting Purple Link."""
+    region_x = 70
+    region_y = 25
+    nearby = rgb[region_y:105, region_x:171]
     pink = (
         (nearby[:, :, 0] > 140)
         & (nearby[:, :, 2] > 100)
         & (nearby[:, :, 0] > nearby[:, :, 1] * 1.25)
         & (nearby[:, :, 2] > nearby[:, :, 1] * 1.10)
     )
-    ys, xs = np.nonzero(pink)
-    if len(xs) < 20:
+    candidates: list[tuple[int, int]] = []
+    for xs, ys in _components(pink):
+        width = int(xs.max() - xs.min() + 1)
+        height = int(ys.max() - ys.min() + 1)
+        # The NPC has one large connected pink body. Purple Link has two
+        # smaller pink regions that are separated by yellow hair and skin.
+        if not 55 <= len(xs) <= 180 or not 10 <= width <= 24 or not 8 <= height <= 28:
+            continue
+        candidates.append(
+            (int(np.mean(xs)) + region_x, int(np.mean(ys)) + region_y)
+        )
+    if not candidates:
         return None
-    npc_x = int(np.median(xs)) + region_x
-    npc_y = int(np.median(ys)) + region_y
-    return npc_x - 120, npc_y - 88
+    player = _link_position(rgb, 1) or (120, 88)
+    return min(candidates, key=lambda point: _squared_distance(point, player))
 
 
 def _route_step(

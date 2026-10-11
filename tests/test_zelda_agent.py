@@ -116,6 +116,10 @@ def test_four_swords_npc_adjacent_uses_p2_visible_pixels() -> None:
 
     views = tuple(split_player_frames(frame(), 4))
     assert not four_swords_npc_adjacent(views)
+    # Add Purple Link next to P2. Its pink clothes must not match the NPC.
+    rgb[64:70, 385:397] = (190, 40, 190)
+    rgb[79:84, 387:395] = (190, 40, 190)
+    rgb[70:79, 385:397] = (245, 190, 35)
     rgb[45:55, 354:364] = (222, 40, 165)
     views = tuple(split_player_frames(frame(), 4))
     assert not four_swords_npc_adjacent(views)
