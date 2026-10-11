@@ -208,9 +208,9 @@ class FourSwordsVisualTargetNavigator:
             return {}
 
         # Each private camera follows its Link near the screen centre. Assign
-        # P2 to a lower target and P3-P4 to the two upper targets. Keep a Link
+        # P2 to the lower-right target, P3 to upper-left, and P4 to lower-left. Keep a Link
         # still only when an active blue target ring is under that Link.
-        target_slots = {1: 3, 2: 0, 3: 1}
+        target_slots = {1: 3, 2: 0, 3: 2}
         plans: dict[int, tuple[str, ...]] = {}
         for player in (1, 2, 3):
             self.assignments.setdefault(player, target_slots[player])
