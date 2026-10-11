@@ -206,6 +206,7 @@ class FourSwordsVisualTargetNavigator:
     tracked_targets: dict[int, tuple[int, int]] = field(default_factory=dict)
     reached_players: set[int] = field(default_factory=set)
     near_players: set[int] = field(default_factory=set)
+    leaving_return_players: set[int] = field(default_factory=set)
     active_counts: dict[int, int] = field(default_factory=dict)
     active_frames: dict[int, int] = field(default_factory=dict)
     probe_reached: bool = False
@@ -217,6 +218,7 @@ class FourSwordsVisualTargetNavigator:
         self.tracked_targets.clear()
         self.reached_players.clear()
         self.near_players.clear()
+        self.leaving_return_players.clear()
         self.active_counts.clear()
         self.active_frames.clear()
         self.probe_reached = False
@@ -251,8 +253,13 @@ class FourSwordsVisualTargetNavigator:
             active_targets = _active_target_centres(rgb)
             grid = _forward_marked_target_grid(rgb)
             if grid is None:
-                plans[player] = _forward_portal_search_step(rgb, position)
+                if player in self.leaving_return_players or _forward_target_grid(rgb) is not None:
+                    self.leaving_return_players.add(player)
+                    plans[player] = ("move_down",)
+                else:
+                    plans[player] = _forward_exploration_step(rgb, position)
                 continue
+            self.leaving_return_players.discard(player)
             target = grid[self.assignments[player]]
             active_now = any(
                 _squared_distance(position, active) <= 12 * 12

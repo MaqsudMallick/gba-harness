@@ -326,6 +326,37 @@ def test_portal_search_moves_down_from_a_visible_return_grid() -> None:
     assert _forward_portal_search_step(rgb, (150, 75)) == ("move_down",)
 
 
+def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None:
+    navigator = FourSwordsVisualTargetNavigator()
+
+    def frame(with_grid: bool, index: int) -> RawFrame:
+        rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+        if with_grid:
+            for x, y in ((70, 40), (120, 40), (70, 88), (120, 88)):
+                rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+                rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        packed = (
+            ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (rgb[:, :, 2].astype(np.uint16) >> 3)
+        )
+        return RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=240,
+            height=160,
+            pitch=480,
+            index=index,
+        )
+
+    return_view = frame(True, 0)
+    blank_view = frame(False, 1)
+    first = navigator("reach_warps", (return_view,) * 4)
+    second = navigator("reach_warps", (blank_view,) * 4)
+
+    assert first == {1: ("move_down",), 2: ("move_down",), 3: ("move_down",)}
+    assert second == first
+
+
 def test_target_grid_order_ignores_small_vertical_jitter() -> None:
     targets = ((160, 91), (110, 92), (160, 140), (110, 141))
 
