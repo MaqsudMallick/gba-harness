@@ -469,12 +469,17 @@ def _visible_reached_teammate_step(
     reached_players: set[int],
 ) -> tuple[str, ...] | None:
     """Move toward a visible teammate that reached the forward portal."""
+    active_targets = _active_target_centres(rgb)
     candidates: list[tuple[int, tuple[int, int]]] = []
     for teammate in reached_players:
         if teammate == player:
             continue
         teammate_position = _link_position(rgb, teammate)
         if teammate_position is None:
+            continue
+        if not any(
+            _squared_distance(teammate_position, target) <= 16 * 16 for target in active_targets
+        ):
             continue
         distance = _squared_distance(position, teammate_position)
         if distance <= 24 * 24:

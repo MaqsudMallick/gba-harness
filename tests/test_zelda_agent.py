@@ -358,8 +358,13 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
     assert second == first
 
 
-def test_visible_reached_teammate_routes_a_bot_around_a_wall() -> None:
+def test_visible_reached_teammate_ignores_a_false_colour_match() -> None:
     rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+
+    # Only the red teammate is on an active portal pad. The blue detection is
+    # a false match and must not change the route.
+    rgb[29:60, 127:158] = (173, 219, 255)
+    rgb[35:54, 133:152] = (255, 251, 255)
 
     def draw_link(player: int, position: tuple[int, int]) -> None:
         colours = {
@@ -371,16 +376,16 @@ def test_visible_reached_teammate_routes_a_bot_around_a_wall() -> None:
         rgb[y - 13 : y + 1, x - 4 : x + 5] = colours[player]
         rgb[y - 21 : y - 13, x - 4 : x + 5] = (245, 190, 35)
 
-    draw_link(1, (122, 87))
-    draw_link(2, (70, 116))
-    draw_link(3, (116, 80))
+    draw_link(1, (145, 44))
+    draw_link(2, (114, 121))
+    draw_link(3, (119, 86))
 
     assert _visible_reached_teammate_step(
         rgb,
         3,
-        (116, 80),
+        (119, 86),
         {1, 2},
-    ) == ("move_left",)
+    ) == ("move_up",)
 
 
 def test_target_grid_order_ignores_small_vertical_jitter() -> None:
