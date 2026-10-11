@@ -143,9 +143,7 @@ def test_vertex_team_provider_rotates_captain_and_parses_joint_actions() -> None
     assert trace_input["user_prompt"].startswith("Goal: solve")
     assert trace_input["observation"]["sha256"]
     assert trace_output["provider_response"] == first.payload
-    assert trace_output["effective_decision"]["decision_reason"] == (
-        "Split across the room."
-    )
+    assert trace_output["effective_decision"]["decision_reason"] == ("Split across the room.")
     assert trace_output["effective_decision"]["player_plans"]["P2"] == [
         "move_left",
         "move_left",
@@ -169,9 +167,7 @@ def test_navigation_mode_uses_one_scout_and_does_not_skip_stages() -> None:
             "note": "Use one scout.",
         }
     )
-    team = VertexTeamDecisionProvider(
-        (provider("gemini", models),), navigation_only=True
-    )
+    team = VertexTeamDecisionProvider((provider("gemini", models),), navigation_only=True)
     request = TeamDecisionRequest(
         goal="discover the target",
         state="dialogue just ended",
@@ -237,9 +233,7 @@ def test_navigation_mode_waits_for_visible_dialogue_text() -> None:
             "note": "Wait for the page to draw.",
         }
     )
-    team = VertexTeamDecisionProvider(
-        (provider("gemini", models),), navigation_only=True
-    )
+    team = VertexTeamDecisionProvider((provider("gemini", models),), navigation_only=True)
     request = TeamDecisionRequest(
         goal="finish the dialogue",
         state="dialogue is open",
@@ -271,3 +265,47 @@ def test_navigation_mode_waits_for_visible_dialogue_text() -> None:
     )
     assert decision.plans[2] == ("wait",)
     assert decision.plans[3] == ("wait",)
+
+
+def test_post_portal_room_allows_visible_combat_actions() -> None:
+    models = FakeModels(
+        {
+            "scene": "three lanes with visible enemies",
+            "stage": "explore_room",
+            "objective": "clear each lane",
+            "player_2_plan": ["move_down", "attack_down"],
+            "player_3_plan": ["attack_down"],
+            "player_4_plan": ["move_down", "use_sword"],
+            "confidence": 0.9,
+            "terminal": False,
+            "note": "Each AI Link clears its visible lane.",
+        }
+    )
+    team = VertexTeamDecisionProvider((provider("gemini", models),), navigation_only=True)
+    request = TeamDecisionRequest(
+        goal="solve the next room",
+        state="the portal transition is complete",
+        image_png=b"composite",
+        actions=(
+            ActionOption("move_down", "down"),
+            ActionOption("attack_down", "attack down"),
+            ActionOption("use_sword", "use sword"),
+            ActionOption("wait", "wait"),
+        ),
+        ai_players=(1, 2, 3),
+        turn=5,
+        stage="explore_room",
+    )
+
+    decision = team.decide_team(request)
+
+    assert decision.stage == "explore_room"
+    assert decision.human_instruction == "P1 remains human-controlled."
+    assert decision.plans[1] == ("move_down", "attack_down")
+    assert decision.plans[2] == ("attack_down",)
+    assert decision.plans[3] == ("move_down", "use_sword")
+    schema = models.kwargs["config"].response_json_schema
+    assert schema["properties"]["stage"]["enum"] == ["explore_room"]
+    assert "npc_actor_player" not in schema["properties"]
+    assert "human_instruction" not in schema["properties"]
+    assert "Do not return through the entrance portal" in models.kwargs["contents"][0]

@@ -625,12 +625,12 @@ def test_human_portal_transition_resumes_one_shared_model() -> None:
         session=LinkedSession(RecordingPort()),
         frames=cast(
             FrameLatch,
-            SequenceComposite([0, 0, 0, 255, 255, 255]),
+            SequenceComposite([0, 0, 0, 255, 0, 255, 255]),
         ),
         assignments=assigned,
         policy=FOUR_SWORDS_POLICY,
         config=LinkedRunnerConfig(
-            max_turns=3,
+            max_turns=4,
             max_model_calls=2,
             continue_after_team_target=True,
         ),
@@ -641,7 +641,7 @@ def test_human_portal_transition_resumes_one_shared_model() -> None:
             3: ("wait",),
         },
         team_target_detector=lambda _views: True,
-        gameplay_detector=lambda _frame: True,
+        gameplay_detector=lambda frame: frame.data[0] == 255,
         on_next_room=lambda: reset_calls.append(True),
     )
     runner._team_stage = "reach_warps"

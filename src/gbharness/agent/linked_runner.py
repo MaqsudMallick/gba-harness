@@ -255,6 +255,22 @@ class LinkedAgentRunner:
                     self.telemetry.log("The visible room changed; the shared team model resumed")
                     continue
 
+                if (
+                    self._team_stage == "explore_room"
+                    and self.gameplay_detector is not None
+                    and not self.gameplay_detector(composite)
+                ):
+                    self.session.submit(
+                        {
+                            assignment.player: self.policy.resolve("wait")
+                            for assignment in self.assignments
+                            if assignment.participant_type == "agent"
+                        }
+                    )
+                    if self.on_stage_change is not None:
+                        self.on_stage_change("ROOM TRANSITION — waiting for a stable game view")
+                    continue
+
                 requests = tuple(
                     DecisionRequest(
                         goal=self.policy.goal,

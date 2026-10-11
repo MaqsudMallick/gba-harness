@@ -69,7 +69,8 @@ class VertexTeamDecisionProvider:
         npc_actor = request.ai_players[0]
         npc_player_number = npc_actor + 1
         allowed = [option.key for option in request.actions]
-        if self.navigation_only:
+        guided_navigation = self.navigation_only and request.stage != "explore_room"
+        if guided_navigation:
             allowed = [
                 action
                 for action in allowed
@@ -121,7 +122,7 @@ class VertexTeamDecisionProvider:
             "terminal",
             "note",
         ]
-        if self.navigation_only:
+        if guided_navigation:
             common_properties.update(
                 {
                     "npc_actor_player": {
@@ -136,7 +137,7 @@ class VertexTeamDecisionProvider:
                 }
             )
             common_required.extend(["npc_actor_player", "npc_facing_action", "dialogue_visible"])
-        else:
+        elif not self.navigation_only:
             common_properties.update(
                 {
                     "human_instruction": {"type": "string"},
@@ -175,7 +176,10 @@ class VertexTeamDecisionProvider:
                     "Identify its immediate cooperative obstacle. Give P2, P3, and P4 "
                     "short screen-relative plans. Keep stage=explore_room. P1 is human. "
                     "Give no automated P1 plan. Set terminal=true only when the screenshot "
-                    "shows that the room objective is complete. Do not use a walkthrough."
+                    "shows that the room objective is complete. Do not use a walkthrough. "
+                    "Do not return through the entrance portal. Move toward the room "
+                    "interior. Use sword or directional attack actions only when a visible "
+                    "enemy or breakable obstacle blocks progress."
                 )
             else:
                 stage_instructions = (
