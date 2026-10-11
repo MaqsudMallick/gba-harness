@@ -145,6 +145,17 @@ portable across games and multiplayer formats.
   one trace ID for the run and saved local visual evidence at
   `artifacts/zelda-single-trace-verification.png`; dashboard-tree inspection or a sanitized
   share link remains required before public submission.
+- Failure reproduced: the first live human-plus-agent implementation queued one human macro
+  behind the slowest model call, so P1 often timed out to `wait` and did not feel human
+  controlled. Trace `e56cc3206808bca57ce0adff5d535b27` records that failed behavior.
+- Fixed: the hybrid runner now executes P1 keyboard macros on the emulator immediately while
+  P2-P4 are reasoning, supports arrows/WASD and held-key repeat, keeps those actions inside
+  the same root trace, and excludes them from both the model-call budget and the agents'
+  synchronized action batch. A regression test blocks all three agents until the human move
+  is observed on the controller port.
+- Verified the fix in hosted trace `1f7240d2a33dd1e334174e91025b1aab`: P1 executed
+  `move_left` as `human_live_control` while three Vertex decisions were in progress. The run
+  completed two turns and six model calls before the window was closed.
 
 ## Demo
 

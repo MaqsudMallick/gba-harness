@@ -343,6 +343,7 @@ def _run_live(
 ) -> LinkedEpisodeResult:
     """Keep a responsive four-console window open while agents run in a worker."""
     pygame.init()
+    pygame.key.set_repeat(180, 120)
     frame = latch.require()
     native_size = (frame.width, frame.height)
     game_size = (frame.width * scale, frame.height * scale)
@@ -391,14 +392,11 @@ def _run_live(
                     if human_actions is not None:
                         human_actions.submit("wait")
                     running = False
-                elif (
-                    human_actions is not None
-                    and event.type == pygame.KEYDOWN
-                    and not getattr(event, "repeat", False)
-                ):
+                elif human_actions is not None and event.type == pygame.KEYDOWN:
                     action = _human_action_for_key(event.key)
                     if action is not None:
                         human_actions.submit(action)
+                        phase[0] = f"P{human_player} HUMAN CONTROL — {action}"
 
             latest_frame = latch.latest()
             if latest_frame is None:
@@ -424,7 +422,7 @@ def _run_live(
                         f"P{player.player + 1} {model}: {player.action} ({player.confidence:.0%})"
                     )
             if human_player:
-                lines.append("Human: arrows move · N interact · M sword · Space wait")
+                lines.append("Human: arrows/WASD move · N/F interact · M/G sword · Space wait")
             lines.append("Esc: stop agents and close")
             for index, line in enumerate(lines[:7]):
                 color = (110, 238, 174) if index == 0 else (225, 228, 238)
@@ -455,6 +453,12 @@ def _human_action_for_key(key: int) -> str | None:
         pygame.K_RETURN: "start",
         pygame.K_RSHIFT: "select",
         pygame.K_SPACE: "wait",
+        pygame.K_w: "move_up",
+        pygame.K_s: "move_down",
+        pygame.K_a: "move_left",
+        pygame.K_d: "move_right",
+        pygame.K_f: "interact",
+        pygame.K_g: "use_sword",
     }.get(key)
 
 

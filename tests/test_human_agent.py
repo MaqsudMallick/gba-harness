@@ -31,3 +31,9 @@ def test_human_provider_rejects_action_outside_policy() -> None:
     decision = HumanDecisionProvider(source, timeout_seconds=0).decide(request())
 
     assert decision.action == "wait"
+
+
+def test_human_source_short_poll_distinguishes_no_input() -> None:
+    source = HumanActionSource()
+
+    assert source.poll_action(timeout=0) is None

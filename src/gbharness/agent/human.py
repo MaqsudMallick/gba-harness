@@ -19,6 +19,10 @@ class HumanActionSource:
         default_factory=threading.Condition, init=False, repr=False
     )
 
+    def __post_init__(self) -> None:
+        if self.max_pending < 1:
+            raise ValueError("max_pending must be positive")
+
     def submit(self, action: str) -> None:
         with self._condition:
             while len(self._pending) >= self.max_pending:
@@ -27,9 +31,13 @@ class HumanActionSource:
             self._condition.notify()
 
     def next_action(self, *, timeout: float) -> str:
+        return self.poll_action(timeout=timeout) or "wait"
+
+    def poll_action(self, *, timeout: float) -> str | None:
+        """Return the next action, or ``None`` when the short poll expires."""
         with self._condition:
             self._condition.wait_for(lambda: bool(self._pending), timeout=timeout)
-            return self._pending.popleft() if self._pending else "wait"
+            return self._pending.popleft() if self._pending else None
 
 
 @dataclass(slots=True)
@@ -54,3 +62,7 @@ class HumanDecisionProvider:
             scene="human_input",
             note="Keyboard macro selected by the human participant.",
         )
+
+    def poll_action(self, *, timeout: float = 0.05) -> str | None:
+        """Expose live keyboard polling to a hybrid linked runner."""
+        return self.source.poll_action(timeout=timeout)

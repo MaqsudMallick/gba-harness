@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from gbharness.agent.contracts import Decision, DecisionRequest
+from gbharness.agent.human import HumanActionSource, HumanDecisionProvider
 from gbharness.agent.linked_runner import (
     LinkedAgentRunner,
     LinkedRunnerConfig,
@@ -49,6 +50,17 @@ class RecordingPort:
         return True
 
 
+class HumanAwarePort(RecordingPort):
+    def __init__(self) -> None:
+        super().__init__()
+        self.human_moved = threading.Event()
+
+    def press_for(self, player: int, button: Button) -> None:
+        super().press_for(player, button)
+        if player == 0 and button == Button.UP:
+            self.human_moved.set()
+
+
 class FakeProvider:
     def __init__(self, name: str, decisions: list[Decision]) -> None:
         self._name = name
@@ -62,6 +74,22 @@ class FakeProvider:
     def decide(self, request: DecisionRequest) -> Decision:
         self.requests.append(request)
         return next(self.decisions)
+
+
+class WaitForHumanProvider:
+    def __init__(self, name: str, human_moved: threading.Event) -> None:
+        self._name = name
+        self.human_moved = human_moved
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def decide(self, request: DecisionRequest) -> Decision:
+        del request
+        if not self.human_moved.wait(timeout=1):
+            raise TimeoutError("human action was not executed during agent reasoning")
+        return Decision("wait", 1.0, "room")
 
 
 @dataclass
@@ -226,3 +254,38 @@ def test_human_participant_is_a_tool_and_does_not_consume_model_budget() -> None
     kinds = {name: kind for name, kind, _attributes in telemetry.spans}
     assert kinds["player_1_human_input"] == "TOOL"
     assert result.model_calls == 3
+
+
+def test_live_human_action_executes_while_agents_are_reasoning() -> None:
+    port = HumanAwarePort()
+    source = HumanActionSource()
+    source.submit("move_up")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human leader",
+            HumanDecisionProvider(source),
+            participant_type="human",
+        ),
+        *(
+            PlayerAssignment(
+                player,
+                f"agent {player + 1}",
+                WaitForHumanProvider(f"model-{player}", port.human_moved),
+            )
+            for player in range(1, 4)
+        ),
+    )
+    runner = LinkedAgentRunner(
+        session=LinkedSession(port),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=1, max_model_calls=3),
+    )
+
+    result = runner.run()
+
+    assert port.human_moved.is_set()
+    assert result.model_calls == 3
+    assert result.turns[0].players[0].action == "move_up"

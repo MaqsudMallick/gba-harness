@@ -236,12 +236,14 @@ uv run python examples/zelda_four_swords.py \
 
 Add `--live` to watch the fast lobby route and cooperative puzzle before the model turn.
 Live mode defaults to P1 as a human participant and P2-P4 as Vertex agents. Use the arrow
-keys for movement, N for interact, M for sword, and Space to wait. Pass `--human-player 0`
-for four Vertex agents, or `--human-player 2` through `4` to move the keyboard lane. The
-window reports each phase, shows every participant's latest action, and remains open after
-the bounded run until Escape. The deterministic puzzle prelude still controls all four Links;
-human control begins in the decision loop after that verified motor skill. Use
-`--skip-first-puzzle` only when debugging the raw lobby.
+keys or WASD for movement, N/F for interact, M/G for sword, and Space to wait. Human macros
+execute immediately on the emulator while the three Vertex agents are reasoning, and held
+movement keys repeat. Pass `--human-player 0` for four Vertex agents, or
+`--human-player 2` through `4` to move the keyboard lane. The window reports each phase,
+shows every participant's latest action, and remains open after the bounded run until Escape.
+The deterministic puzzle prelude still controls all four Links; human control begins in the
+decision loop after that verified motor skill. Use `--skip-first-puzzle` only when debugging
+the raw lobby.
 
 `--max-model-calls` is a hard team-wide cost ceiling; a headless four-agent turn consumes
 four calls, while the default live human-plus-agent turn consumes three. The run prints

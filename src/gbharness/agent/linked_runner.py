@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from gbharness.agent.contracts import Decision, DecisionProvider, DecisionRequest, GamePolicy
+from gbharness.agent.human import HumanDecisionProvider
 from gbharness.multiplayer import LinkedActionResult, LinkedSession
 from gbharness.observability import NullTelemetry, RunTelemetry
 from gbharness.vision.capture import FrameLatch
@@ -225,12 +226,23 @@ class LinkedAgentRunner:
                     "GUARDRAIL",
                     attributes={
                         "neatlogs.guardrail.input": json.dumps(
-                            [decision.terminal for decision in decisions]
+                            [
+                                decision.terminal
+                                for assignment, decision in zip(
+                                    self.assignments, decisions, strict=True
+                                )
+                                if assignment.participant_type == "agent"
+                            ]
                         ),
                         "turn": turn,
                     },
                 ) as guardrail_span:
-                    unanimous = all(decision.terminal for decision in decisions)
+                    terminal_votes = [
+                        decision.terminal
+                        for assignment, decision in zip(self.assignments, decisions, strict=True)
+                        if assignment.participant_type == "agent"
+                    ]
+                    unanimous = bool(terminal_votes) and all(terminal_votes)
                     terminal_count = terminal_count + 1 if unanimous else 0
                     passed = terminal_count >= self.config.terminal_confirmations
                     self.telemetry.annotate(
@@ -249,11 +261,17 @@ class LinkedAgentRunner:
 
                 action_keys = tuple(self._safe_action(decision) for decision in decisions)
                 actions = {
-                    assignment.player: self.policy.resolve(action_keys[index])
+                    assignment.player: self.policy.resolve(
+                        "wait" if assignment.participant_type == "human" else action_keys[index]
+                    )
                     for index, assignment in enumerate(self.assignments)
                 }
                 action_summary = {
-                    f"P{assignment.player + 1}": action_keys[index]
+                    f"P{assignment.player + 1}": (
+                        f"live:{action_keys[index]}"
+                        if assignment.participant_type == "human"
+                        else action_keys[index]
+                    )
                     for index, assignment in enumerate(self.assignments)
                 }
                 with self.telemetry.span(
@@ -367,25 +385,114 @@ class LinkedAgentRunner:
                 )
                 return decision
 
+        live_humans = {
+            index: assignment
+            for index, assignment in enumerate(self.assignments)
+            if assignment.participant_type == "human"
+            and isinstance(assignment.provider, HumanDecisionProvider)
+        }
+        async_indexes = [
+            index for index in range(len(self.assignments)) if index not in live_humans
+        ]
+        outcomes: list[Decision | BaseException | None] = [None] * len(self.assignments)
+        live_actions: dict[int, list[str]] = {index: [] for index in live_humans}
+
         with ThreadPoolExecutor(
-            max_workers=len(self.assignments), thread_name_prefix="linked-agent"
+            max_workers=max(1, len(async_indexes)), thread_name_prefix="linked-agent"
         ) as executor:
-            futures = [
-                executor.submit(
+            futures = {
+                index: executor.submit(
                     contextvars.copy_context().run,
                     call,
-                    assignment,
-                    request,
+                    self.assignments[index],
+                    requests[index],
                 )
-                for assignment, request in zip(self.assignments, requests, strict=True)
-            ]
-            outcomes: list[Decision | BaseException] = []
-            for future in futures:
-                try:
-                    outcomes.append(future.result())
-                except BaseException as exc:
-                    outcomes.append(exc)
-            return tuple(outcomes)
+                for index in async_indexes
+            }
+            while futures:
+                for index, assignment in live_humans.items():
+                    provider = assignment.provider
+                    assert isinstance(provider, HumanDecisionProvider)
+                    action = provider.poll_action(timeout=0.05)
+                    if action is None:
+                        continue
+                    if action not in self.policy.actions:
+                        action = "wait"
+                    with self.telemetry.span(
+                        f"player_{assignment.player + 1}_live_action",
+                        "TOOL",
+                        attributes={
+                            "neatlogs.tool.name": "human_keyboard_controller",
+                            "neatlogs.tool.description": (
+                                "Execute a human action while teammate agents are reasoning"
+                            ),
+                            "neatlogs.tool.parameters": action,
+                            "player.number": assignment.player + 1,
+                            "turn": turn,
+                            "frame.before": self.session.frame,
+                        },
+                    ) as human_span:
+                        result = self.session.submit(
+                            {assignment.player: self.policy.resolve(action)}
+                        )
+                        self.telemetry.annotate(
+                            human_span,
+                            {
+                                "frame.after": result.total_frames,
+                                "frames.advanced": result.frames_advanced,
+                                "emulation.ended": result.emulation_ended,
+                            },
+                        )
+                    live_actions[index].append(action)
+                    self.telemetry.log(
+                        "P{player} human live action {action} on turn {turn}",
+                        player=assignment.player + 1,
+                        action=action,
+                        turn=turn,
+                    )
+
+                completed = [index for index, future in futures.items() if future.done()]
+                for index in completed:
+                    future = futures.pop(index)
+                    try:
+                        outcomes[index] = future.result()
+                    except BaseException as exc:
+                        outcomes[index] = exc
+
+        for index, assignment in live_humans.items():
+            actions = live_actions[index]
+            last_action = actions[-1] if actions else "wait"
+            with self.telemetry.span(
+                f"player_{assignment.player + 1}_human_input",
+                "TOOL",
+                attributes={
+                    "neatlogs.tool.name": "human_keyboard_controller",
+                    "neatlogs.tool.description": "Summarize live human control during reasoning",
+                    "neatlogs.tool.parameters": json.dumps(actions),
+                    "player.number": assignment.player + 1,
+                    "turn": turn,
+                    "human.action_count": len(actions),
+                },
+            ) as human_summary_span:
+                decision = Decision(
+                    action=last_action,
+                    confidence=1.0,
+                    scene="human_live_control",
+                    note=f"Executed {len(actions)} live keyboard actions during agent reasoning.",
+                )
+                self.telemetry.annotate(
+                    human_summary_span,
+                    {
+                        "decision.action": decision.action,
+                        "decision.confidence": decision.confidence,
+                        "decision.scene": decision.scene,
+                        "decision.note": decision.note,
+                    },
+                )
+                outcomes[index] = decision
+
+        assert all(outcome is not None for outcome in outcomes)
+        return tuple(outcome for outcome in outcomes if outcome is not None)
 
     def _safe_action(self, decision: Decision) -> str:
         if decision.confidence >= self.config.confidence_threshold:
