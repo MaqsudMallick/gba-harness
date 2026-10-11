@@ -6,6 +6,7 @@ import numpy as np
 
 from gbharness.agent.zelda import (
     FourSwordsVisualTargetNavigator,
+    _link_position,
     _order_target_grid,
     bootstrap_four_swords,
     first_training_reward_visible,
@@ -259,6 +260,18 @@ def test_target_grid_order_ignores_small_vertical_jitter() -> None:
         (110, 141),
         (160, 140),
     )
+
+
+def test_link_position_does_not_include_a_nearby_target_ring() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    rgb[78:84, 116:124] = (220, 30, 25)
+    rgb[70:78, 116:124] = (245, 190, 35)
+    rgb[91:119, 106:110] = (220, 30, 25)
+    rgb[91:119, 130:134] = (220, 30, 25)
+    rgb[91:95, 106:134] = (220, 30, 25)
+    rgb[115:119, 106:134] = (220, 30, 25)
+
+    assert _link_position(rgb, 1) == (119, 87)
 
 
 def test_visual_target_navigator_keeps_p2_on_a_covered_probe_target() -> None:

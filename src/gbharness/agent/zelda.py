@@ -532,14 +532,15 @@ def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
     if not candidates:
         return None
     _, anchor_x, anchor_y = min(candidates)
-    nearby_y, nearby_x = np.nonzero(
-        mask
-        & (np.abs(np.indices(mask.shape)[1] - anchor_x) <= 16)
-        & (np.abs(np.indices(mask.shape)[0] - anchor_y) <= 24)
+    selected = min(
+        _components(mask),
+        key=lambda component: _squared_distance(
+            (int(np.mean(component[0])), int(np.mean(component[1]))),
+            (anchor_x, anchor_y),
+        ),
     )
-    if not len(nearby_x):
-        return None
-    return int(np.mean(nearby_x)), int(nearby_y.max() + 4)
+    selected_x, selected_y = selected
+    return int(np.mean(selected_x)), int(selected_y.max() + 4)
 
 
 def _components(mask: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
