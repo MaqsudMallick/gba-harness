@@ -373,8 +373,8 @@ def _pink_npc_offset(rgb: np.ndarray) -> tuple[int, int] | None:
 def _pink_npc_position(rgb: np.ndarray) -> tuple[int, int] | None:
     """Find the upper pink NPC without selecting Purple Link."""
     region_x = 70
-    region_y = 25
-    nearby = rgb[region_y:105, region_x:171]
+    region_y = 15
+    nearby = rgb[region_y:150, region_x:171]
     pink = (
         (nearby[:, :, 0] > 140)
         & (nearby[:, :, 2] > 100)
@@ -543,12 +543,27 @@ def _target_grids(
 
 
 def _forward_target_grid(rgb: np.ndarray) -> tuple[tuple[int, int], ...] | None:
+    marker = _pink_npc_position(rgb)
+    if marker is None:
+        return None
     targets = _merge_target_centres(
         _orange_target_centres(rgb),
         _active_target_centres(rgb),
     )
     grids = _target_grids(targets)
-    return grids[0] if grids else None
+    matching = tuple(
+        grid
+        for grid in grids
+        if _squared_distance(
+            marker,
+            (
+                sum(point[0] for point in grid) // len(grid),
+                sum(point[1] for point in grid) // len(grid),
+            ),
+        )
+        <= 38 * 38
+    )
+    return matching[0] if matching else None
 
 
 def _forward_exploration_step(

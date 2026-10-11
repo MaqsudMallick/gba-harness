@@ -6,6 +6,7 @@ import numpy as np
 
 from gbharness.agent.zelda import (
     FourSwordsVisualTargetNavigator,
+    _forward_target_grid,
     _link_position,
     _order_target_grid,
     _target_grids,
@@ -140,6 +141,7 @@ def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
             for y in (target_y, target_y + 48):
                 current[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
                 current[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        current[target_y + 19 : target_y + 29, 91:101] = (222, 40, 165)
         if activate:
             y = target_y + 48
             current[y - 15 : y + 16, 105:136] = (173, 219, 255)
@@ -158,23 +160,19 @@ def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
         )
 
     far = view(125)
-    assert four_swords_visual_target_plan(
-        "probe_target", (far, far, far, far)
-    ) == {1: ("move_up",)}
+    assert four_swords_visual_target_plan("probe_target", (far, far, far, far)) == {1: ("move_up",)}
 
     near = view(40, activate=True)
-    assert four_swords_visual_target_plan(
-        "probe_target", (near, near, near, near)
-    ) == {1: ("wait",)}
+    assert four_swords_visual_target_plan("probe_target", (near, near, near, near)) == {
+        1: ("wait",)
+    }
     assert four_swords_probe_target_reached((near, near, near, near))
     assert not four_swords_probe_target_reached((far, far, far, far))
     assert four_swords_visual_target_plan("reach_warps", (far, far, far, far)) == {}
 
     blank = _composite(gameplay=False)
     blank_views = tuple(split_player_frames(blank, 4))
-    assert four_swords_visual_target_plan("probe_target", blank_views) == {
-        1: ("move_up",)
-    }
+    assert four_swords_visual_target_plan("probe_target", blank_views) == {1: ("move_up",)}
 
 
 def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -> None:
@@ -194,6 +192,15 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
         for x, y in active_targets:
             rgb[y - 15 : y + 16, x - 15 : x + 16] = (173, 219, 255)
             rgb[y - 9 : y + 10, x - 9 : x + 10] = (255, 251, 255)
+        all_targets = _merge_test_targets(visible_targets, active_targets)
+        if len(all_targets) == 4:
+            centre_x = sum(point[0] for point in all_targets) // 4
+            centre_y = sum(point[1] for point in all_targets) // 4
+            rgb[centre_y - 5 : centre_y + 5, centre_x - 5 : centre_x + 5] = (
+                222,
+                40,
+                165,
+            )
         colours = {
             1: (220, 30, 25),
             2: (30, 70, 220),
@@ -216,9 +223,7 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
 
     navigator = FourSwordsVisualTargetNavigator()
     positions = {1: (120, 80), 2: (120, 80), 3: (120, 80)}
-    views = tuple(
-        view(max(index, 1), positions.get(index, (120, 80))) for index in range(4)
-    )
+    views = tuple(view(max(index, 1), positions.get(index, (120, 80))) for index in range(4))
     p2_unreached = FourSwordsVisualTargetNavigator()
     p2_target_below = list(views)
     p2_target_below[1] = view(1, (120, 80), ((120, 125),))
@@ -284,6 +289,32 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     assert navigator.all_assigned_players_reached(tuple(reached_views))
 
 
+def _merge_test_targets(
+    visible: tuple[tuple[int, int], ...],
+    active: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], ...]:
+    result = list(visible)
+    for target in active:
+        if target not in result:
+            result.append(target)
+    return tuple(result)
+
+
+def test_forward_grid_rejects_the_return_portal_marker() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    targets = ((70, 40), (120, 40), (70, 88), (120, 88))
+    for x, y in targets:
+        rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+        rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+
+    # The red U-shaped return marker is not the pink forward marker.
+    rgb[58:68, 90:100] = (190, 30, 25)
+    assert _forward_target_grid(rgb) is None
+
+    rgb[58:68, 90:100] = (222, 40, 165)
+    assert _forward_target_grid(rgb) is not None
+
+
 def test_target_grid_order_ignores_small_vertical_jitter() -> None:
     targets = ((160, 91), (110, 92), (160, 140), (110, 141))
 
@@ -339,6 +370,15 @@ def test_visual_target_navigator_keeps_p2_on_a_covered_probe_target() -> None:
         for x, y in active_targets:
             rgb[y - 15 : y + 16, x - 15 : x + 16] = (173, 219, 255)
             rgb[y - 9 : y + 10, x - 9 : x + 10] = (255, 251, 255)
+        all_targets = _merge_test_targets(targets, active_targets)
+        if len(all_targets) == 4:
+            centre_x = sum(point[0] for point in all_targets) // 4
+            centre_y = sum(point[1] for point in all_targets) // 4
+            rgb[centre_y - 5 : centre_y + 5, centre_x - 5 : centre_x + 5] = (
+                222,
+                40,
+                165,
+            )
         packed = (
             ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
