@@ -1,9 +1,11 @@
-"""Rotating Vertex captain that emits one coordinated multiplayer plan."""
+"""Vertex team captain that emits one coordinated multiplayer plan."""
 
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -19,9 +21,9 @@ Coordinate every AI Link as one team while Player 1 is human. Identify the immed
 obstacle, preserve the current objective until it is visibly complete, and assign distinct
 targets. Never attack a solid wall or ledge. If a direction was blocked, back away or route
 around it. Keep a Link on an activated plate while other Links travel to separate visible
-plates or warps. Return short plans, not isolated guesses. Player 1 is human-controlled, but
-an NPC assistant can move P1 to a visible NPC and use interact or wait to complete dialogue.
-Never identify or use mechanics from a different Zelda game."""
+plates or warps. Return short plans, not isolated guesses. Never control Player 1. Assign NPC
+navigation and dialogue to the designated AI Link. Never identify or use mechanics from a
+different Zelda game."""
 
 _NPC_STAGE_ORDER = (
     "reach_npc",
@@ -31,9 +33,17 @@ _NPC_STAGE_ORDER = (
     "complete",
 )
 
+_NAVIGATION_OBJECTIVES = {
+    "reach_npc": "Move the designated AI Link next to the visible pink NPC.",
+    "advance_dialogue": "Use the designated AI Link to complete the visible NPC dialogue.",
+    "probe_target": "Use the designated AI Link to test one visible circular floor target.",
+    "reach_warps": "Move P2, P3, and P4 to three separate visible circular targets.",
+    "complete": "Keep all assigned AI Links on their completed targets.",
+}
+
 
 class VertexTeamDecisionProvider:
-    """Rotate several wrapped Vertex clients through a shared captain role."""
+    """Use one wrapped Vertex client per coordinated team plan."""
 
     def __init__(
         self,
@@ -56,6 +66,8 @@ class VertexTeamDecisionProvider:
 
     def decide_team(self, request: TeamDecisionRequest) -> TeamDecision:
         provider = self.providers[(request.turn - 1) % len(self.providers)]
+        npc_actor = request.ai_players[0]
+        npc_player_number = npc_actor + 1
         allowed = [option.key for option in request.actions]
         if self.navigation_only:
             allowed = [
@@ -82,45 +94,73 @@ class VertexTeamDecisionProvider:
             }
             for player in request.ai_players
         }
+        common_properties: dict[str, Any] = {
+            "scene": {"type": "string"},
+            "stage": {
+                "type": "string",
+                "enum": list(_NPC_STAGE_ORDER) if self.navigation_only else ["explore"],
+            },
+            "objective": {"type": "string"},
+            **plan_properties,
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "terminal": {"type": "boolean"},
+            "note": {"type": "string"},
+        }
+        common_required = [
+            "scene",
+            "stage",
+            "objective",
+            *plan_properties,
+            "confidence",
+            "terminal",
+            "note",
+        ]
+        if self.navigation_only:
+            common_properties.update(
+                {
+                    "npc_actor_player": {
+                        "type": "integer",
+                        "enum": [npc_player_number],
+                    },
+                    "npc_facing_action": {
+                        "type": "string",
+                        "enum": facing_actions or ["wait"],
+                    },
+                    "dialogue_visible": {"type": "boolean"},
+                }
+            )
+            common_required.extend(
+                ["npc_actor_player", "npc_facing_action", "dialogue_visible"]
+            )
+        else:
+            common_properties.update(
+                {
+                    "human_instruction": {"type": "string"},
+                    "human_dialogue_plan": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": human_allowed},
+                        "minItems": 1,
+                        "maxItems": 6,
+                    },
+                    "p1_facing_action": {
+                        "type": "string",
+                        "enum": facing_actions or ["wait"],
+                    },
+                    "dialogue_visible": {"type": "boolean"},
+                }
+            )
+            common_required.extend(
+                [
+                    "human_instruction",
+                    "human_dialogue_plan",
+                    "p1_facing_action",
+                    "dialogue_visible",
+                ]
+            )
         schema = {
             "type": "object",
-            "properties": {
-                "scene": {"type": "string"},
-                "stage": {
-                    "type": "string",
-                    "enum": list(_NPC_STAGE_ORDER) if self.navigation_only else ["explore"],
-                },
-                "objective": {"type": "string"},
-                "human_instruction": {"type": "string"},
-                "human_dialogue_plan": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": human_allowed},
-                    "minItems": 1,
-                    "maxItems": 6,
-                },
-                "p1_facing_action": {
-                    "type": "string",
-                    "enum": facing_actions or ["wait"],
-                },
-                "dialogue_visible": {"type": "boolean"},
-                **plan_properties,
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                "terminal": {"type": "boolean"},
-                "note": {"type": "string"},
-            },
-            "required": [
-                "scene",
-                "stage",
-                "objective",
-                "human_instruction",
-                "human_dialogue_plan",
-                "p1_facing_action",
-                "dialogue_visible",
-                *plan_properties,
-                "confidence",
-                "terminal",
-                "note",
-            ],
+            "properties": common_properties,
+            "required": common_required,
             "additionalProperties": False,
         }
         stage_instructions = ""
@@ -128,16 +168,19 @@ class VertexTeamDecisionProvider:
             stage_instructions = (
                 f"Current stage: {request.stage}. The visible pink rabbit-like character "
                 "is a friendly NPC, not an enemy. Use these stages in order: reach_npc, "
-                "advance_dialogue, reach_warps, complete. During reach_npc, assign P1 a "
-                "direct screen-relative route to stand next to the pink NPC. All AI Links "
-                "must wait. During advance_dialogue, make P1 face the NPC and use interact "
-                "until all dialogue boxes close. Set p1_facing_action from the visible "
-                "relative positions. Put that face action immediately before interact. All "
-                "AI Links must wait. Set dialogue_visible=true only when a text box is "
+                f"advance_dialogue, probe_target, reach_warps, complete. P1 is human and "
+                f"must never receive an automated plan. P{npc_player_number} is the NPC "
+                f"bot. During reach_npc, assign P{npc_player_number} a direct screen-relative "
+                f"route to stand next to the pink NPC. Other AI Links must wait. During "
+                f"advance_dialogue, make P{npc_player_number} face the NPC and use interact "
+                "until all dialogue boxes close. Set npc_facing_action from the visible "
+                "relative positions. Put that face action immediately before interact. "
+                "Other AI Links must wait. Set dialogue_visible=true only when a text box is "
                 "visible now. During "
-                "probe_target, P2 is the Red Link and is the only scout. Route P2 to the "
+                f"probe_target, P{npc_player_number} is the only scout. Route that Link to the "
                 "centre of one visible colored circular floor tile. P1, P3, and P4 must "
-                "wait. P2 must not wait unless P2 is already centred on the tile or a "
+                f"wait. P{npc_player_number} must not wait unless it is already centred on "
+                "the tile or a "
                 "visible response is in progress. Use two to six movement actions when the "
                 "route is clear. Change to reach_warps only after P2 causes a visible "
                 "response from that tile. During reach_warps, assign each AI Link a "
@@ -148,13 +191,13 @@ class VertexTeamDecisionProvider:
             )
         observation_png = request.image_png
         observation_label = "four-player composite view"
-        if self.navigation_only and request.player_images:
-            if request.stage in {"reach_npc", "advance_dialogue"}:
-                observation_png = request.player_images[0]
-                observation_label = "P1 Green Link private view"
-            elif request.stage == "probe_target" and len(request.player_images) > 1:
-                observation_png = request.player_images[1]
-                observation_label = "P2 Red Link private view"
+        if (
+            self.navigation_only
+            and request.player_images
+            and request.stage in {"reach_npc", "advance_dialogue", "probe_target"}
+        ):
+            observation_png = request.player_images[npc_actor]
+            observation_label = f"P{npc_player_number} AI Link private view"
         prompt = (
             f"Goal: {request.goal}\n"
             f"Shared state:\n{request.state}\n\n"
@@ -164,17 +207,29 @@ class VertexTeamDecisionProvider:
             "Return one coordinated plan of one to six actions for every AI player. "
             "Plans must be complementary. Do not send separated Links repeatedly into a "
             "visible wall. If two Links already occupy targets, keep them there while the "
-            "other Links route to different targets. Use the human dialogue plan to move "
-            "P1 to a visible NPC, interact, and wait for dialogue animation. Do not use it "
-            "for combat."
+            "other Links route to different targets. P1 is human-controlled. Never assign "
+            "an automated plan to P1. Use the designated AI Link for NPC dialogue. Do not "
+            "use an attack action for dialogue."
         )
-        response = provider.client.models.generate_content(
-            model=provider.model,
-            contents=[
-                prompt,
-                types.Part.from_bytes(data=observation_png, mime_type="image/png"),
-            ],
-            config=types.GenerateContentConfig(
+        trace_input = {
+            "model": provider.model,
+            "system_instruction": _SYSTEM_INSTRUCTION,
+            "user_prompt": prompt,
+            "observation": {
+                "label": observation_label,
+                "mime_type": "image/png",
+                "bytes": len(observation_png),
+                "sha256": hashlib.sha256(observation_png).hexdigest(),
+            },
+            "response_json_schema": schema,
+            "stage_before": request.stage,
+            "turn": request.turn,
+        }
+        response = _generate_with_retry(
+            provider,
+            prompt,
+            observation_png,
+            types.GenerateContentConfig(
                 system_instruction=_SYSTEM_INSTRUCTION,
                 temperature=0.1,
                 max_output_tokens=1024,
@@ -194,7 +249,12 @@ class VertexTeamDecisionProvider:
             raise ValueError(f"team confidence must be in [0, 1], got {confidence}")
         scene = str(payload.get("scene", "unknown"))
         stage = _bounded_stage(request.stage, str(payload.get("stage", request.stage)))
-        objective = str(payload.get("objective", "coordinate the current room"))
+        model_objective = str(payload.get("objective", "coordinate the current room"))
+        objective = (
+            _NAVIGATION_OBJECTIVES.get(stage, model_objective)
+            if self.navigation_only
+            else model_objective
+        )
         terminal = bool(payload.get("terminal", False))
         note = str(payload.get("note", ""))
         decisions: dict[int, Decision] = {}
@@ -203,9 +263,21 @@ class VertexTeamDecisionProvider:
             plan = _action_plan(
                 payload.get(f"player_{player + 1}_plan"), allowed, player + 1
             )
-            if self.navigation_only and stage in {"reach_npc", "advance_dialogue"}:
+            if (
+                self.navigation_only
+                and stage in {"reach_npc", "advance_dialogue"}
+                and player != npc_actor
+            ):
                 plan = ("wait",)
-            if self.navigation_only and stage == "probe_target" and player != 1:
+            if self.navigation_only and stage == "advance_dialogue" and player == npc_actor:
+                if bool(payload.get("dialogue_visible", False)):
+                    plan = ("interact", "wait", "wait", "wait", "wait", "wait")
+                else:
+                    facing = str(payload.get("npc_facing_action", "wait"))
+                    if facing not in facing_actions:
+                        facing = "wait"
+                    plan = (facing, "interact", "wait", "wait", "wait", "wait")
+            if self.navigation_only and stage == "probe_target" and player != npc_actor:
                 plan = ("wait",)
             plans[player] = plan
             decisions[player] = Decision(
@@ -220,21 +292,45 @@ class VertexTeamDecisionProvider:
         usage = getattr(response, "usage_metadata", None)
         input_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
         output_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
-        human_plan = _action_plan(payload.get("human_dialogue_plan"), human_allowed, 1)
-        if self.navigation_only and stage == "advance_dialogue":
-            if bool(payload.get("dialogue_visible", False)):
-                human_plan = ("interact", "wait", "wait", "wait", "wait", "wait")
-            else:
-                facing = str(payload.get("p1_facing_action", "wait"))
-                if facing not in facing_actions:
-                    facing = "wait"
-                human_plan = (facing, "interact", "wait", "wait", "wait", "wait")
-        elif self.navigation_only and stage in {"probe_target", "reach_warps"}:
-            human_plan = ("wait",)
+        human_plan = (
+            ()
+            if self.navigation_only
+            else _action_plan(payload.get("human_dialogue_plan"), human_allowed, 1)
+        )
+        human_instruction = (
+            "P1 remains human-controlled."
+            if self.navigation_only
+            else str(payload.get("human_instruction", ""))
+        )
+
+        trace_output = {
+            "model": provider.model,
+            "raw_response_text": response.text,
+            "provider_response": payload,
+            "effective_decision": {
+                "scene": scene,
+                "stage_before": request.stage,
+                "stage_after": stage,
+                "objective": objective,
+                "decision_reason": note,
+                "confidence": confidence,
+                "terminal": terminal,
+                "human_instruction": human_instruction,
+                "human_plan": list(human_plan),
+                "npc_actor_player": npc_player_number if self.navigation_only else None,
+                "player_plans": {
+                    f"P{player + 1}": list(plan) for player, plan in plans.items()
+                },
+            },
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+        }
 
         return TeamDecision(
             decisions=decisions,
-            human_instruction=str(payload.get("human_instruction", "")),
+            human_instruction=human_instruction,
             objective=objective,
             captain=provider.name,
             input_tokens=input_tokens,
@@ -242,7 +338,33 @@ class VertexTeamDecisionProvider:
             plans=plans,
             human_plan=human_plan,
             stage=stage,
+            trace_input_json=json.dumps(trace_input, sort_keys=True),
+            trace_output_json=json.dumps(trace_output, sort_keys=True),
         )
+
+
+def _generate_with_retry(
+    provider: VertexDecisionProvider,
+    prompt: str,
+    observation_png: bytes,
+    config: types.GenerateContentConfig,
+) -> Any:
+    """Retry a short transient Vertex failure without changing the team turn."""
+    for attempt in range(3):
+        try:
+            return provider.client.models.generate_content(
+                model=provider.model,
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(data=observation_png, mime_type="image/png"),
+                ],
+                config=config,
+            )
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError("Vertex retry loop ended without a response")
 
 
 _OBSERVER_INSTRUCTION = """You are one player observer for The Legend of Zelda: Four
@@ -261,7 +383,7 @@ screen."""
 
 
 class HierarchicalVertexTeamDecisionProvider:
-    """Four parallel private observers followed by one rotating coordinator."""
+    """Use four private observers and one coordinator."""
 
     def __init__(self, providers: tuple[VertexDecisionProvider, ...]) -> None:
         if len(providers) != 4:

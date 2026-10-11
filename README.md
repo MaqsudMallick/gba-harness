@@ -223,10 +223,10 @@ Training 1's first cooperative switch task. It visually verifies the two reveale
 chests before the Vertex agents continue from the solved room. This keeps pixel steering
 fast while reserving model calls for higher-level decisions.
 
-Each Vertex agent receives only its own 240x160 console, a distinct team role, and the same
-bounded action vocabulary; their chosen macros are applied atomically on the shared emulator
-clock. The default team uses four Google models available through Vertex AI: Gemini 2.5
-Flash Lite, Gemini 2.5 Flash, Gemini 2.5 Pro, and Gemini 3 Flash Preview.
+One Vertex team agent receives the composite four-player view and the same bounded action
+vocabulary for P2, P3, and P4. It returns one coordinated plan for the three AI players.
+The emulator applies the three plans on one shared clock. The default model is Gemini 2.5
+Flash.
 
 ```bash
 uv run python examples/zelda_four_swords.py \
@@ -235,11 +235,9 @@ uv run python examples/zelda_four_swords.py \
 ```
 
 Add `--live` to watch the fast lobby route and cooperative puzzle before the model turn.
-Live mode defaults to P1 as a human participant and P2-P4 as Vertex agents. The three AI
-players use a rotating team-captain planner: one of their Vertex models sees the composite
-four-player state, emits one joint P2-P4 action set plus a concrete P1 instruction, then the
-captain role rotates on the next turn. This costs one model call per team turn and avoids
-three mutually unaware button guesses. Use the arrow
+Live mode defaults to P1 as a human participant and P2-P4 as AI players. One Vertex team
+agent sees the composite four-player state. It emits one joint P2-P4 action set. This costs
+one model call per team turn. Use the arrow
 keys or WASD for movement, N/F for interact, M/G for sword, and Space to wait. Human macros
 execute immediately on the emulator while the three Vertex agents are reasoning, and held
 movement keys repeat. Pass `--human-player 0` for four Vertex agents, or
@@ -251,16 +249,15 @@ the raw lobby. When the bounded agent-turn budget finishes, live mode switches t
 `P1 FREE PLAY` rather than freezing the final frame; human actions remain active and traced
 until Escape closes the window.
 
-`--max-model-calls` is a hard team-wide cost ceiling; a headless four-agent turn consumes
-four calls, while the default coordinated live human-plus-agent turn consumes one rotating
-captain call. The run prints
+`--max-model-calls` is a hard team-wide cost ceiling. The default coordinated live turn
+consumes one team-agent call. The run prints
 per-player actions and token totals plus its Neatlogs trace ID. The ROM remains local and
 gitignored.
 
 One `four_swords_puzzle_attempt` WORKFLOW trace contains the complete run. Its children show
 the deterministic puzzle CHAIN and visual reward GUARDRAIL, followed by the coordinated
-decision CHAIN. Coordinated live mode has one rotating-captain AGENT with the wrapped Vertex
-call and named P2-P4 assigned-action children; the human lane is a TOOL child. The shared controller TOOL records all four actions on
+decision CHAIN. Coordinated live mode has one team-captain AGENT with the wrapped Vertex
+call and named P2-P4 assigned-action children. The human lane is a TOOL child. The shared controller TOOL records all four actions on
 one clock, and completion GUARDRAIL spans record consensus on every turn. This makes inputs,
 normalized decisions, actions, retries, tokens, and the visible success check inspectable in
 one trace tree instead of four disconnected traces.

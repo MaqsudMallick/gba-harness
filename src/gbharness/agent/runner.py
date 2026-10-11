@@ -78,7 +78,16 @@ class AgentRunner:
         errors = 0
         status: RunStatus = "turn_limit"
 
-        with self.telemetry.span("game_agent_episode", "WORKFLOW"):
+        with self.telemetry.span(
+            "game_agent_episode",
+            "WORKFLOW",
+            input_value={
+                "game": self.policy.name,
+                "goal": self.policy.goal,
+                "provider": self.provider.name,
+                "turn_limit": self.config.max_turns,
+            },
+        ) as episode_span:
             self.telemetry.log(
                 "episode started for {game} with {provider}",
                 game=self.policy.name,
@@ -102,8 +111,27 @@ class AgentRunner:
                 )
 
                 try:
-                    with self.telemetry.span("choose_action", "AGENT"):
+                    with self.telemetry.span(
+                        "choose_action",
+                        "AGENT",
+                        input_value={
+                            "goal": request.goal,
+                            "state": request.state,
+                            "allowed_actions": [option.key for option in request.actions],
+                        },
+                    ) as decision_span:
                         decision = self.provider.decide(request)
+                        self.telemetry.record_output(
+                            decision_span,
+                            "AGENT",
+                            {
+                                "action": decision.action,
+                                "confidence": decision.confidence,
+                                "scene": decision.scene,
+                                "note": decision.note,
+                                "terminal": decision.terminal,
+                            },
+                        )
                     errors = 0
                 except Exception as exc:
                     errors += 1
@@ -130,8 +158,21 @@ class AgentRunner:
                     terminal_count = 0
 
                 action_key = self._safe_action(decision)
-                with self.telemetry.span("execute_controller_action", "TOOL"):
+                with self.telemetry.span(
+                    "execute_controller_action",
+                    "TOOL",
+                    input_value={"action": action_key},
+                    attributes={"neatlogs.tool.name": "gba_controller"},
+                ) as controller_span:
                     result = self.session.submit(self.policy.resolve(action_key))
+                    self.telemetry.record_output(
+                        controller_span,
+                        "TOOL",
+                        {
+                            "frames_advanced": result.frames_advanced,
+                            "frame": result.total_frames,
+                        },
+                    )
                 recent.append(action_key)
                 record = self._record(turn, action_key, decision, result, repeated)
                 records.append(record)
@@ -143,6 +184,16 @@ class AgentRunner:
                 )
                 if self.on_turn is not None:
                     self.on_turn(record)
+            self.telemetry.record_output(
+                episode_span,
+                "WORKFLOW",
+                {
+                    "status": status,
+                    "turns": len(records),
+                    "frames": self.session.frame,
+                    "last_action": records[-1].action if records else "",
+                },
+            )
         return EpisodeResult(
             status=status,
             turns=tuple(records),
@@ -168,7 +219,13 @@ class AgentRunner:
     def _recover(self) -> None:
         if "wait" not in self.policy.actions:
             return
-        with self.telemetry.span("decision_error_recovery", "TOOL"):
+        with self.telemetry.span(
+            "decision_error_recovery",
+            "TOOL",
+            input_value={"action": "wait", "reason": "decision provider raised"},
+            output_value={"recovered": "submitted one wait action"},
+            attributes={"neatlogs.tool.name": "gba_controller"},
+        ):
             self.session.submit(self.policy.resolve("wait"))
 
     def _state_summary(self, turn: int, repeated: int, recent: deque[str]) -> str:

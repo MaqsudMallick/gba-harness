@@ -16,6 +16,7 @@ from gbharness.agent.zelda import (
 from gbharness.buttons import Button
 from gbharness.multiplayer import LinkedSession
 from gbharness.vision.capture import FrameLatch, RawFrame
+from gbharness.vision.multiplayer import split_player_frames
 
 
 class FourPlayerRecordingPort:
@@ -72,7 +73,7 @@ def test_four_swords_gameplay_requires_heart_hud_on_every_view() -> None:
     assert four_swords_gameplay_visible(_composite(gameplay=True), 4)
 
 
-def test_four_swords_dialogue_detector_uses_player_one_text_box() -> None:
+def test_four_swords_dialogue_detector_uses_any_player_text_box() -> None:
     rgb = np.full((320, 480, 3), (130, 180, 110), dtype=np.uint8)
 
     def frame() -> RawFrame:
@@ -90,18 +91,16 @@ def test_four_swords_dialogue_detector_uses_player_one_text_box() -> None:
         )
 
     assert not four_swords_dialogue_visible(frame())
-    rgb[98:142, 10:230] = (8, 8, 8)
+    # Put the dialogue box only in the P2 viewport.
+    rgb[98:142, 250:470] = (8, 8, 8)
     assert four_swords_dialogue_visible(frame())
 
 
 def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
-    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
-    rgb[105:136, 105:136] = (250, 100, 20)
-    rgb[111:130, 111:130] = (245, 245, 220)
-
-    def view(player_top: int) -> RawFrame:
-        current = rgb.copy()
-        current[player_top : player_top + 14, 116:125] = (220, 30, 25)
+    def view(target_y: int) -> RawFrame:
+        current = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+        current[target_y - 15 : target_y + 16, 105:136] = (250, 100, 20)
+        current[target_y - 9 : target_y + 10, 111:130] = (245, 245, 220)
         packed = (
             ((current[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((current[:, :, 1].astype(np.uint16) >> 2) << 5)
@@ -115,18 +114,24 @@ def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
             index=0,
         )
 
-    far = view(64)
+    far = view(125)
     assert four_swords_visual_target_plan(
         "probe_target", (far, far, far, far)
-    ) == {1: ("move_down", "move_down")}
+    ) == {1: ("move_down",)}
 
-    near = view(102)
+    near = view(92)
     assert four_swords_visual_target_plan(
         "probe_target", (near, near, near, near)
     ) == {1: ("wait",)}
     assert four_swords_probe_target_reached((near, near, near, near))
     assert not four_swords_probe_target_reached((far, far, far, far))
     assert four_swords_visual_target_plan("reach_warps", (far, far, far, far)) == {}
+
+    blank = _composite(gameplay=False)
+    blank_views = tuple(split_player_frames(blank, 4))
+    assert four_swords_visual_target_plan("probe_target", blank_views) == {
+        1: ("move_down",)
+    }
 
 
 def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -> None:
@@ -162,29 +167,57 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
         )
 
     navigator = FourSwordsVisualTargetNavigator()
-    positions = {1: (60, 75), 2: (120, 75), 3: (180, 75)}
+    positions = {1: (120, 80), 2: (120, 80), 3: (120, 80)}
     views = tuple(
         view(max(index, 1), positions.get(index, (120, 80))) for index in range(4)
     )
+    views = (views[0], view(1, (120, 80), ((120, 88),)), views[2], views[3])
 
     plans = navigator("reach_warps", views)
 
     assert set(plans) == {1, 2, 3}
     assert len(set(navigator.assignments.values())) == 3
+    assert plans[1] == ("wait",)
 
-    p4_target = navigator.tracked_targets[3]
-    shifted_p4_target = (p4_target[0] - 24, p4_target[1] - 18)
+    shifted_p4_target = (160, 120)
     partial_views = list(views)
     partial_views[3] = view(3, (120, 80), (shifted_p4_target,))
     assert navigator("reach_warps", tuple(partial_views))[3] != ("wait",)
 
     reached_views = list(views)
-    for player, target_index in navigator.assignments.items():
-        reached_views[player] = view(player, targets[target_index])
+    for player in (1, 2, 3):
+        reached_views[player] = view(player, (120, 80), ((120, 88),))
 
     reached_plans = navigator("reach_warps", tuple(reached_views))
     assert reached_plans == {1: ("wait",), 2: ("wait",), 3: ("wait",)}
     assert navigator.all_assigned_players_reached(tuple(reached_views))
+
+
+def test_visual_target_navigator_keeps_p2_on_a_covered_probe_target() -> None:
+    navigator = FourSwordsVisualTargetNavigator()
+
+    def views(targets: tuple[tuple[int, int], ...]) -> tuple[RawFrame, ...]:
+        rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+        for x, y in targets:
+            rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+            rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        packed = (
+            ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (rgb[:, :, 2].astype(np.uint16) >> 3)
+        )
+        frame = RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=240,
+            height=160,
+            pitch=480,
+            index=0,
+        )
+        return (frame, frame, frame, frame)
+
+    assert navigator("probe_target", views(((140, 88),))) == {1: ("move_right",)}
+    assert navigator.probe_target_reached(views(((65, 88),)))
+    assert navigator("probe_target", views(((65, 88),))) == {1: ("wait",)}
 
 
 def test_bootstrap_is_deterministic_and_stops_at_visible_gameplay() -> None:

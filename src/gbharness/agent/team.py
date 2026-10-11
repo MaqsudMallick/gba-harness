@@ -50,6 +50,8 @@ class TeamDecision:
     proposals: tuple[PlayerProposal, ...] = ()
     model_calls: int = 1
     stage: str = "explore"
+    trace_input_json: str = ""
+    trace_output_json: str = ""
 
 
 class TeamDecisionProvider(Protocol):

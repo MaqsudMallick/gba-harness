@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from itertools import permutations
 from typing import Final
 
 import numpy as np
@@ -139,11 +138,14 @@ def four_swords_gameplay_visible(frame: RawFrame, players: int) -> bool:
 
 
 def four_swords_dialogue_visible(frame: RawFrame) -> bool:
-    """Detect the large black dialogue box in Player 1's visible screen."""
-    view = to_rgb(split_player_frames(frame, 4)[0])
-    region = view[92:148, 4:236]
-    dark = np.max(region, axis=2) < 45
-    return float(np.count_nonzero(dark)) / float(dark.size) >= 0.45
+    """Detect a large black dialogue box in any player screen."""
+    for frame_view in split_player_frames(frame, 4):
+        view = to_rgb(frame_view)
+        region = view[92:148, 4:236]
+        dark = np.max(region, axis=2) < 45
+        if float(np.count_nonzero(dark)) / float(dark.size) >= 0.45:
+            return True
+    return False
 
 
 def four_swords_visual_target_plan(
@@ -153,17 +155,20 @@ def four_swords_visual_target_plan(
     """Move the P2 scout to a visible circular target from pixels only."""
     if stage != "probe_target" or len(views) < 2:
         return {}
-    rgb = to_rgb(views[1])
-    targets = _orange_target_centres(rgb)
-    player = _link_position(rgb, 1)
-    if player is None or not targets:
-        return {}
+    targets = _orange_target_centres(to_rgb(views[1]))
+    if not targets:
+        # P2 finishes the NPC dialogue near the top wall. Move away from the
+        # NPC until one complete floor target enters the private viewport.
+        return {1: ("move_down",)}
 
+    player = (120, 88)
     target = min(
         targets,
         key=lambda point: (point[0] - player[0]) ** 2 + (point[1] - player[1]) ** 2,
     )
-    return {1: _route_step(player, target)}
+    if _squared_distance(player, target) <= 6 * 6:
+        return {1: ("wait",)}
+    return {1: _single_route_step(player, target)}
 
 
 def four_swords_probe_target_reached(views: tuple[RawFrame, ...]) -> bool:
@@ -173,10 +178,14 @@ def four_swords_probe_target_reached(views: tuple[RawFrame, ...]) -> bool:
 
 @dataclass(slots=True)
 class FourSwordsVisualTargetNavigator:
-    """Keep distinct screenshot-derived target assignments for P2 through P4."""
+    """Keep each AI Link on a distinct screenshot-derived floor target."""
 
     assignments: dict[int, int] = field(default_factory=dict)
     tracked_targets: dict[int, tuple[int, int]] = field(default_factory=dict)
+    reached_players: set[int] = field(default_factory=set)
+    near_players: set[int] = field(default_factory=set)
+    probe_near_target: bool = False
+    probe_reached: bool = False
 
     def __call__(
         self,
@@ -184,63 +193,83 @@ class FourSwordsVisualTargetNavigator:
         views: tuple[RawFrame, ...],
     ) -> dict[int, tuple[str, ...]]:
         if stage == "probe_target":
-            return four_swords_visual_target_plan(stage, views)
+            return self._probe_plan(views)
         if stage != "reach_warps" or len(views) < 4:
             return {}
 
-        observations: dict[int, tuple[tuple[int, int], tuple[tuple[int, int], ...]]] = {}
-        for player in (1, 2, 3):
-            rgb = to_rgb(views[player])
-            position = _link_position(rgb, player)
-            targets = tuple(sorted(_orange_target_centres(rgb), key=lambda p: (p[1], p[0])))
-            if position is None or not targets:
-                continue
-            observations[player] = (position, targets)
+        # P2 already activated a target during the probe. Keep it there.
+        self.assignments.setdefault(1, 0)
+        self.reached_players.add(1)
 
-        if (
-            len(observations) == 3
-            and len(self.assignments) != 3
-            and all(len(targets) >= 4 for _position, targets in observations.values())
-        ):
-            candidates = permutations(range(4), 3)
-            best = min(
-                candidates,
-                key=lambda assignment: sum(
-                    _squared_distance(
-                        observations[player][0], observations[player][1][target_index]
-                    )
-                    for player, target_index in zip((1, 2, 3), assignment, strict=True)
-                ),
-            )
-            self.assignments = dict(zip((1, 2, 3), best, strict=True))
-            self.tracked_targets = {
-                player: observations[player][1][target_index]
-                for player, target_index in self.assignments.items()
-            }
-
-        plans: dict[int, tuple[str, ...]] = {}
-        for player in self.assignments:
-            observation = observations.get(player)
-            if observation is None:
+        # Each private camera follows its Link near the screen centre. P3 and
+        # P4 approach the grid from different sides. Keep each Link still after
+        # arrival.
+        anchor = (120, 88)
+        plans: dict[int, tuple[str, ...]] = {1: ("wait",)}
+        for player in (2, 3):
+            self.assignments.setdefault(player, player - 1)
+            if player in self.reached_players:
                 plans[player] = ("wait",)
                 continue
-            position, targets = observation
-            previous_target = self.tracked_targets.get(player)
-            if previous_target is None:
+            targets = _orange_target_centres(to_rgb(views[player]))
+            if not targets:
+                if player in self.near_players:
+                    self.reached_players.add(player)
                 plans[player] = ("wait",)
                 continue
-            target = min(targets, key=lambda point: _squared_distance(point, previous_target))
-            if _squared_distance(target, previous_target) > 55 * 55:
-                plans[player] = ("wait",)
-                continue
+            target = min(targets, key=lambda point: _squared_distance(point, anchor))
             self.tracked_targets[player] = target
-            plans[player] = _route_step(position, target)
+            distance = _squared_distance(anchor, target)
+            if player in self.near_players and distance > 30 * 30:
+                self.reached_players.add(player)
+                plans[player] = ("wait",)
+                continue
+            if distance <= 20 * 20:
+                self.near_players.add(player)
+            if distance <= 6 * 6:
+                self.reached_players.add(player)
+                plans[player] = ("wait",)
+                continue
+            plans[player] = _single_route_step(anchor, target)
         return plans
+
+    def _probe_plan(
+        self,
+        views: tuple[RawFrame, ...],
+    ) -> dict[int, tuple[str, ...]]:
+        if self.probe_reached:
+            return {1: ("wait",)}
+        if len(views) < 2:
+            return {}
+
+        anchor = (120, 88)
+        targets = _orange_target_centres(to_rgb(views[1]))
+        if not targets:
+            if self.probe_near_target:
+                self.probe_reached = True
+                return {1: ("wait",)}
+            return {1: ("move_down",)}
+
+        target = min(targets, key=lambda point: _squared_distance(point, anchor))
+        distance = _squared_distance(anchor, target)
+        if self.probe_near_target and distance > 30 * 30:
+            self.probe_reached = True
+            return {1: ("wait",)}
+        self.probe_near_target = distance <= 20 * 20
+        if distance <= 16 * 16:
+            self.probe_reached = True
+            return {1: ("wait",)}
+        return {1: _single_route_step(anchor, target)}
+
+    def probe_target_reached(self, views: tuple[RawFrame, ...]) -> bool:
+        """Confirm that P2 covered its selected floor target."""
+        self._probe_plan(views)
+        return self.probe_reached
 
     def all_assigned_players_reached(self, views: tuple[RawFrame, ...]) -> bool:
         """Confirm that P2 through P4 overlap their fixed visual targets."""
         plans = self("reach_warps", views)
-        return len(self.assignments) == 3 and all(
+        return self.reached_players == {1, 2, 3} and all(
             plans.get(player) == ("wait",) for player in (1, 2, 3)
         )
 
@@ -264,6 +293,18 @@ def _route_step(
         action = "move_down" if dy > 0 else "move_up"
         distance = abs(dy)
     return (action, action) if distance > 28 else (action,)
+
+
+def _single_route_step(
+    player: tuple[int, int],
+    target: tuple[int, int],
+) -> tuple[str, ...]:
+    """Move one controlled step toward a target."""
+    dx = target[0] - player[0]
+    dy = target[1] - player[1]
+    if abs(dx) > abs(dy):
+        return ("move_right" if dx > 0 else "move_left",)
+    return ("move_down" if dy > 0 else "move_up",)
 
 
 def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
@@ -440,6 +481,11 @@ def solve_first_training_puzzle(
     with trace.span(
         "solve_first_training_puzzle",
         "CHAIN",
+        input_value={
+            "puzzle": "Basic Training 1 outer switches",
+            "participants": 4,
+            "method": "deterministic local visual policy, no walkthrough access",
+        },
         attributes={
             "puzzle.name": "Basic Training 1 outer switches",
             "puzzle.participants": 4,
@@ -450,11 +496,9 @@ def solve_first_training_puzzle(
         with trace.span(
             "unlock_tutorial_lobby",
             "TOOL",
-            attributes={
-                "neatlogs.tool.name": "bounded_controller_sequence",
-                "neatlogs.tool.description": "Advance the lobby dialogue for Green Link",
-                "neatlogs.tool.parameters": "P1: right, up, interact, dialogue confirms",
-            },
+            input_value={"P1": "right, up, interact, then dialogue confirms"},
+            output_value={"lobby": "tutorial dialogue advanced for Green Link"},
+            attributes={"neatlogs.tool.name": "bounded_controller_sequence"},
         ):
             emit("FAST MOTOR SKILL — unlocking the tutorial lobby")
             one(0, hold("right", 16))
@@ -469,11 +513,11 @@ def solve_first_training_puzzle(
         with trace.span(
             "assemble_team_on_warp",
             "TOOL",
-            attributes={
-                "neatlogs.tool.name": "four_player_warp_assembly",
-                "neatlogs.tool.description": "Move all four Links onto the cooperative warp",
-                "neatlogs.tool.parameters": "P1,P2,P3,P4 bounded approach vectors",
+            input_value={
+                "goal": "move all four Links onto the cooperative warp",
+                "approach": "P1-P4 bounded approach vectors, then a 11x11 sweep for P4",
             },
+            attributes={"neatlogs.tool.name": "four_player_warp_assembly"},
         ) as warp_span:
             emit("FAST MOTOR SKILL — assembling all four Links on the warp")
             approaches = (
@@ -518,11 +562,9 @@ def solve_first_training_puzzle(
         with trace.span(
             "collect_rupees_and_regroup",
             "TOOL",
-            attributes={
-                "neatlogs.tool.name": "synchronized_team_movement",
-                "neatlogs.tool.description": "Collect four entry Rupees and regroup",
-                "neatlogs.tool.parameters": "P1,P2,P3,P4 move south; P2,P4 realign",
-            },
+            input_value={"plan": "P1-P4 move south; P2 and P4 realign left"},
+            output_value={"team": "four entry Rupees collected and team regrouped"},
+            attributes={"neatlogs.tool.name": "synchronized_team_movement"},
         ):
             one(0, wait(500))
             emit("FAST MOTOR SKILL — collecting four Rupees and regrouping")
@@ -535,11 +577,9 @@ def solve_first_training_puzzle(
         with trace.span(
             "activate_outer_switches",
             "TOOL",
-            attributes={
-                "neatlogs.tool.name": "cooperative_switch_activation",
-                "neatlogs.tool.description": "Place Green and Purple on both outer switches",
-                "neatlogs.tool.parameters": "P1 left/down; P4 right/down; P2,P3 hold",
-            },
+            input_value={"plan": "P1 left then down; P4 right then down; P2 and P3 hold"},
+            output_value={"switches": "Green and Purple placed on both outer switches"},
+            attributes={"neatlogs.tool.name": "cooperative_switch_activation"},
         ):
             emit("COOPERATIVE PUZZLE — Green and Purple taking both switches")
             team({0: hold("left", 16), 3: hold("right", 21)})
@@ -549,19 +589,17 @@ def solve_first_training_puzzle(
         with trace.span(
             "verify_reward_chests_visible",
             "GUARDRAIL",
-            attributes={
-                "neatlogs.guardrail.input": "P1 framebuffer reward-chest regions",
+            input_value={
+                "question": "did the puzzle reveal both reward chests?",
+                "source": "P1 framebuffer reward-chest regions",
             },
         ) as verification_span:
             visible = first_training_reward_visible(frames.require())
-            trace.annotate(
+            trace.annotate(verification_span, {"neatlogs.guardrail.passed": visible})
+            trace.record_output(
                 verification_span,
-                {
-                    "neatlogs.guardrail.passed": visible,
-                    "neatlogs.guardrail.output": (
-                        "both reward chests visible" if visible else "reward chests absent"
-                    ),
-                },
+                "GUARDRAIL",
+                "both reward chests visible" if visible else "reward chests absent",
             )
             if not visible:
                 raise RuntimeError("the first puzzle did not reveal both reward chests")
@@ -571,6 +609,15 @@ def solve_first_training_puzzle(
                 "puzzle.completed": visible,
                 "puzzle.frames_advanced": session.frame - started,
                 "puzzle.warp_sweep_steps": sweep_steps,
+            },
+        )
+        trace.record_output(
+            puzzle_span,
+            "CHAIN",
+            {
+                "completed": visible,
+                "frames_advanced": session.frame - started,
+                "warp_sweep_steps": sweep_steps,
             },
         )
         trace.log(

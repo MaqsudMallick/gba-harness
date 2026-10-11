@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Four Swords · Live Decision Trace</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070a0f;
+      --panel: #0d131c;
+      --panel-2: #121a25;
+      --line: #273246;
+      --line-strong: #3a4963;
+      --text: #f4f7fb;
+      --muted: #8e9aaf;
+      --cyan: #45ddff;
+      --green: #44d598;
+      --red: #ff4e6a;
+      --blue: #509cff;
+      --violet: #ae8aff;
+      --orange: #ffb34f;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body { margin: 0; color: var(--text); background: radial-gradient(circle at 80% -10%, #1a2943 0, var(--bg) 35%); }
+    button, input { font: inherit; }
+    .shell { max-width: 1880px; margin: 0 auto; padding: 22px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .mark { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: #071018; background: linear-gradient(135deg, var(--violet), var(--cyan)); font-weight: 950; }
+    h1 { margin: 0; font-size: clamp(22px, 2.4vw, 34px); letter-spacing: -.045em; }
+    .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .live { display: flex; align-items: center; gap: 9px; padding: 9px 13px; border: 1px solid #285443; border-radius: 999px; color: #9ff7d1; background: #10251e; font-size: 12px; font-weight: 800; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 50% { opacity: .3; } }
+    .metrics { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 9px; margin-bottom: 12px; }
+    .metric { min-height: 73px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: #0d131cd9; }
+    .metric span, .eyebrow { display: block; color: var(--muted); font-size: 10px; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .metric strong { display: block; margin-top: 9px; overflow: hidden; font: 750 16px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .panel { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 15px; background: #0b1119e8; overflow: hidden; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+    .panel-head h2 { margin: 0; font-size: 15px; }
+    .controls { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; }
+    .controls label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+    .matrix-scroll { max-height: 58vh; overflow: auto; scroll-behavior: smooth; }
+    .trace-matrix { min-width: 1120px; }
+    .matrix-head, .trace-row { display: grid; grid-template-columns: 280px repeat(4, minmax(195px, 1fr)); }
+    .matrix-head { position: sticky; top: 0; z-index: 5; background: #111925f5; box-shadow: 0 1px 0 var(--line-strong); }
+    .head-cell { padding: 12px 14px; border-right: 1px solid var(--line); }
+    .head-cell:last-child { border-right: 0; }
+    .head-cell b { display: block; margin-bottom: 3px; font-size: 13px; }
+    .head-cell small { color: var(--muted); font-size: 10px; }
+    .head-p1 { box-shadow: inset 0 3px 0 var(--green); }
+    .head-p2 { box-shadow: inset 0 3px 0 var(--red); }
+    .head-p3 { box-shadow: inset 0 3px 0 var(--blue); }
+    .head-p4 { box-shadow: inset 0 3px 0 var(--violet); }
+    .trace-row { min-height: 166px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background .16s ease; }
+    .trace-row:last-child { border-bottom: 0; }
+    .trace-row:hover { background: #111a27; }
+    .trace-row.selected { background: #101d28; box-shadow: inset 3px 0 0 var(--cyan); }
+    .stage-divider { display: grid; grid-template-columns: 280px 1fr; min-height: 70px; border-bottom: 1px solid #3c4b61; background: linear-gradient(90deg, #13281f, #0e1820 52%, #0b1119); }
+    .stage-index { display: flex; align-items: center; gap: 12px; padding: 14px; border-right: 1px solid #355246; }
+    .stage-number { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 10px; color: #06130e; background: var(--green); font: 950 14px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .stage-name { color: #b5f4d5; font: 850 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .stage-context { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 18px; }
+    .stage-context strong { display: block; margin-bottom: 4px; font-size: 13px; }
+    .stage-context span { color: var(--muted); font-size: 11px; }
+    .stage-entered { padding: 6px 9px; border: 1px solid #39705a; border-radius: 999px; color: #adf0d1 !important; background: #11281f; font: 800 10px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+    .turn-cell, .player-cell { min-width: 0; padding: 14px; border-right: 1px solid var(--line); }
+    .player-cell:last-child { border-right: 0; }
+    .turn-top { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 11px; color: var(--cyan); font: 850 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .stage-chip { display: inline-block; max-width: 100%; padding: 5px 8px; overflow: hidden; border-radius: 999px; color: #cbd6e5; background: #202b3b; font: 750 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .runtime-transition { margin-top: 9px; padding: 7px 8px; border: 1px solid #7a5724; border-radius: 7px; color: #ffd69b; background: #261b0c; font: 850 9px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .runtime-transition[hidden] { display: none; }
+    .objective { margin: 10px 0 0; color: #edf2f8; font-size: 13px; line-height: 1.42; }
+    .scene { margin: 9px 0 0; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .cell-label { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+    .cell-label strong { font-size: 12px; }
+    .status { color: var(--muted); font: 750 9px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+    .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 13px; }
+    .action { padding: 5px 7px; border: 1px solid #344159; border-radius: 7px; color: #e6edf7; background: #151e2b; font: 750 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .action.wait { color: #91a0b5; }
+    .arrow { color: #55647a; font-size: 10px; }
+    .execution { padding-top: 9px; border-top: 1px dashed #29364a; }
+    .execution .eyebrow { margin-bottom: 7px; }
+    .human-note { margin-bottom: 13px; padding: 8px 9px; border: 1px solid #285443; border-radius: 8px; color: #a6f3d1; background: #10241d; font-size: 10px; line-height: 1.4; }
+    .pending { color: var(--muted); font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .empty { display: grid; place-items: center; min-height: 280px; padding: 32px; color: var(--muted); text-align: center; }
+    .inspector { padding: 16px; }
+    .inspector-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 9px; margin-bottom: 12px; }
+    .inspector-top h2 { margin: 0; font-size: 21px; }
+    .badge { padding: 5px 8px; border-radius: 999px; color: #c9d5e6; background: #202b3b; font: 750 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .inspector-grid { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(420px, 1.2fr); gap: 15px; align-items: start; }
+    .screen { width: 100%; border: 1px solid #35435b; border-radius: 11px; background: #06080c; image-rendering: pixelated; }
+    .meta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .meta { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: #090e15; }
+    .meta span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+    .meta strong { display: block; overflow: hidden; font: 750 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    details { margin-top: 9px; border: 1px solid var(--line); border-radius: 9px; background: #090e15; }
+    summary { padding: 11px 13px; cursor: pointer; color: #c3d3e8; font-size: 11px; font-weight: 800; }
+    pre { max-height: 560px; margin: 0; padding: 13px; overflow: auto; border-top: 1px solid var(--line); color: #cfe4ff; background: #05080d; font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    @media (max-width: 980px) {
+      .metrics { grid-template-columns: repeat(3, 1fr); }
+      .inspector-grid { grid-template-columns: 1fr; }
+      .matrix-scroll { max-height: 54vh; }
+    }
+    @media (max-width: 620px) {
+      .shell { padding: 11px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .meta-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand"><div class="mark">FS</div><div><h1>Live Decision Trace</h1><p class="subtitle">Each row is one model decision. Each player column shows the requested and executed commands.</p></div></div>
+      <div class="live"><span class="dot"></span><span id="connection">Waiting for trace</span></div>
+    </header>
+
+    <section class="metrics">
+      <div class="metric"><span>Model calls</span><strong id="m-calls">0</strong></div>
+      <div class="metric"><span>Current stage</span><strong id="m-stage">waiting</strong></div>
+      <div class="metric"><span>Input tokens</span><strong id="m-input">0</strong></div>
+      <div class="metric"><span>Output tokens</span><strong id="m-output">0</strong></div>
+      <div class="metric"><span>Total API latency</span><strong id="m-latency">0 s</strong></div>
+      <div class="metric"><span>Latest model</span><strong id="m-model">waiting</strong></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Append-only player command timeline</h2>
+        <div class="controls"><span id="row-count">0 turns</span><label><input id="follow" type="checkbox" checked> Follow latest</label></div>
+      </div>
+      <div class="matrix-scroll" id="matrix-scroll">
+        <div class="trace-matrix">
+          <div class="matrix-head">
+            <div class="head-cell"><b>Decision index</b><small>Stage, objective, and scene</small></div>
+            <div class="head-cell head-p1"><b>P1 · Human</b><small>Manual input only</small></div>
+            <div class="head-cell head-p2"><b>P2 · AI</b><small>NPC and target bot</small></div>
+            <div class="head-cell head-p3"><b>P3 · AI</b><small>Target bot</small></div>
+            <div class="head-cell head-p4"><b>P4 · AI</b><small>Target bot</small></div>
+          </div>
+          <div id="rows"><div class="empty" id="empty">Waiting for the first model call.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Selected call details</h2><span class="controls" id="selection-status">Select a row</span></div>
+      <div class="inspector" id="inspector"><div class="empty">Select a decision row to inspect its exact input and output.</div></div>
+    </section>
+  </div>
+
+  <script>
+    const stageOrder = ["reach_npc", "advance_dialogue", "probe_target", "reach_warps", "complete"];
+    const stageDescriptions = {
+      reach_npc: "Move the designated AI Link next to the visible NPC.",
+      advance_dialogue: "Use the AI Link to complete the NPC dialogue.",
+      probe_target: "Test one visible circular floor target.",
+      reach_warps: "Move P2, P3, and P4 to separate targets.",
+      complete: "Keep the completed target assignments stable."
+    };
+    let trace = { capture: {}, calls: [], executions: [] };
+    let renderedCalls = 0;
+    let executionFingerprints = new Map();
+    let selectedCall = null;
+    let lastSignature = "";
+    let captureStarted = null;
+
+    const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
+    const compact = value => Array.isArray(value) && value.length ? value : ["wait"];
+    const formatJson = value => escapeHtml(JSON.stringify(value, null, 2));
+    const formatRaw = value => {
+      if (value == null) return "";
+      try { return escapeHtml(JSON.stringify(JSON.parse(value), null, 2)); }
+      catch { return escapeHtml(value); }
+    };
+    const actionHtml = actions => compact(actions).map((action, index) => `${index ? '<span class="arrow">→</span>' : ''}<span class="action ${action === 'wait' ? 'wait' : ''}">${escapeHtml(action)}</span>`).join("");
+    const executionFor = call => trace.executions.find(item => item.execution === call.call) || null;
+    const modelPlans = call => call?.output?.effective_decision?.player_plans || {};
+
+    function playerCell(player, call) {
+      const plans = modelPlans(call);
+      const modelPlan = player === 1 ? [] : compact(plans[`P${player}`]);
+      const human = player === 1
+        ? '<div class="human-note">No automated model plan. Only live keyboard input can control P1.</div>'
+        : `<span class="eyebrow">Model command sequence</span><div class="actions">${actionHtml(modelPlan)}</div>`;
+      return `<div class="player-cell" id="player-${call.call}-${player}">
+        <div class="cell-label"><strong>P${player}</strong><span class="status">${player === 1 ? 'human' : 'agent'}</span></div>
+        ${human}
+        <div class="execution"><span class="eyebrow">Executed by emulator</span><div class="pending" id="execution-${call.call}-${player}">Pending</div></div>
+      </div>`;
+    }
+
+    function appendCall(call) {
+      document.getElementById("empty")?.remove();
+      const effective = call?.output?.effective_decision || {};
+      const previous = trace.calls.find(item => item.call === call.call - 1);
+      const currentStage = call.stage_before;
+      const enteredStage = !previous || previous.stage_before !== currentStage;
+      if (enteredStage) {
+        const divider = document.createElement("div");
+        divider.className = "stage-divider";
+        divider.id = `stage-${currentStage}-call-${call.call}`;
+        const stageNumber = Math.max(1, stageOrder.indexOf(currentStage) + 1);
+        divider.innerHTML = `<div class="stage-index"><span class="stage-number">${stageNumber}</span><span class="stage-name">${escapeHtml(currentStage)}</span></div>
+          <div class="stage-context"><div><strong>${escapeHtml(stageDescriptions[currentStage] || effective.objective || "Stage objective")}</strong><span>All following rows belong to this stage until the next divider.</span></div><span class="stage-entered">ENTERED AT TURN ${call.turn}</span></div>`;
+        document.getElementById("rows").appendChild(divider);
+      }
+      const row = document.createElement("div");
+      row.className = "trace-row";
+      row.id = `call-row-${call.call}`;
+      row.dataset.call = call.call;
+      row.dataset.baseStage = `${call.stage_before} → ${effective.stage_after || call.stage_before}`;
+      row.innerHTML = `<div class="turn-cell">
+        <div class="turn-top"><span>TURN ${call.turn}</span><span>CALL ${call.call}</span></div>
+        <span class="stage-chip">${escapeHtml(call.stage_before)} → ${escapeHtml(effective.stage_after || call.stage_before)}</span>
+        <p class="objective">${escapeHtml(effective.objective || "No objective")}</p>
+        <p class="scene">${escapeHtml(effective.scene || call?.output?.provider_response?.scene || "No scene")}</p>
+        <div class="runtime-transition" id="runtime-transition-${call.call}" hidden></div>
+      </div>${[1, 2, 3, 4].map(player => playerCell(player, call)).join("")}`;
+      row.addEventListener("click", () => selectCall(call.call, false));
+      document.getElementById("rows").appendChild(row);
+    }
+
+    function updateExecution(execution) {
+      for (let player = 1; player <= 4; player += 1) {
+        const target = document.getElementById(`execution-${execution.execution}-${player}`);
+        if (!target) continue;
+        target.className = "actions";
+        target.innerHTML = actionHtml(execution.executed_plans?.[player - 1] || ["wait"]);
+      }
+      const row = document.getElementById(`call-row-${execution.execution}`);
+      const stageChip = row?.querySelector(".stage-chip");
+      if (stageChip && execution.runtime_stage_after) {
+        stageChip.textContent = `${row.dataset.baseStage} · runtime ${execution.runtime_stage_after}`;
+      }
+      const call = trace.calls.find(item => item.call === execution.execution);
+      const modelStage = call?.output?.effective_decision?.stage_after || call?.stage_before;
+      const runtimeTransition = document.getElementById(`runtime-transition-${execution.execution}`);
+      if (runtimeTransition && execution.runtime_stage_after && execution.runtime_stage_after !== modelStage) {
+        runtimeTransition.hidden = false;
+        runtimeTransition.textContent = `RUNTIME STAGE CHANGE · ${modelStage} → ${execution.runtime_stage_after}`;
+      }
+      if (selectedCall === execution.execution) renderInspector();
+    }
+
+    function selectCall(callNumber, automatic) {
+      document.querySelector(".trace-row.selected")?.classList.remove("selected");
+      selectedCall = callNumber;
+      document.getElementById(`call-row-${callNumber}`)?.classList.add("selected");
+      if (!automatic) document.getElementById("follow").checked = false;
+      renderInspector();
+    }
+
+    function updateMetrics() {
+      const calls = trace.calls || [];
+      const latest = calls.at(-1);
+      const latestExecution = trace.executions?.at(-1);
+      const currentStage = latestExecution?.runtime_stage_after || latest?.output?.effective_decision?.stage_after || latest?.stage_before || "waiting";
+      const totalInput = calls.reduce((sum, call) => sum + Number(call?.output?.usage?.input_tokens || 0), 0);
+      const totalOutput = calls.reduce((sum, call) => sum + Number(call?.output?.usage?.output_tokens || 0), 0);
+      const totalLatency = calls.reduce((sum, call) => sum + Number(call.latency_ms || 0), 0);
+      document.getElementById("m-calls").textContent = calls.length.toLocaleString();
+      document.getElementById("m-stage").textContent = currentStage;
+      document.getElementById("m-input").textContent = totalInput.toLocaleString();
+      document.getElementById("m-output").textContent = totalOutput.toLocaleString();
+      document.getElementById("m-latency").textContent = totalLatency ? `${(totalLatency / 1000).toFixed(1)} s` : "not captured";
+      document.getElementById("m-model").textContent = latest?.input?.model || "waiting";
+      document.getElementById("row-count").textContent = `${calls.length} turns`;
+    }
+
+    function meta(label, value) {
+      return `<div class="meta"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`;
+    }
+
+    function renderInspector() {
+      const call = trace.calls.find(item => item.call === selectedCall);
+      if (!call) return;
+      const effective = call?.output?.effective_decision || {};
+      const usage = call?.output?.usage || {};
+      const prompt = call?.input?.user_prompt || "";
+      const observation = call?.input?.observation || {};
+      const execution = executionFor(call);
+      document.getElementById("selection-status").textContent = `Turn ${call.turn} · Call ${call.call}`;
+      document.getElementById("inspector").innerHTML = `
+        <div class="inspector-top"><h2>${escapeHtml(effective.objective || "No objective")}</h2><span class="badge">${escapeHtml(call.stage_before)} → ${escapeHtml(effective.stage_after || call.stage_before)}</span></div>
+        <div class="inspector-grid">
+          <img class="screen" src="/trace/${encodeURIComponent(call.input_image)}?v=${encodeURIComponent(call.input_image_sha256 || call.call)}" alt="Exact model input image for call ${call.call}">
+          <div>
+            <div class="meta-grid">
+              ${meta("Model", call?.input?.model || "unknown")}
+              ${meta("API latency", call.latency_ms ? `${call.latency_ms.toFixed(1)} ms` : "not captured")}
+              ${meta("Input tokens", Number(usage.input_tokens || 0).toLocaleString())}
+              ${meta("Output tokens", Number(usage.output_tokens || 0).toLocaleString())}
+              ${meta("Prompt characters", prompt.length.toLocaleString())}
+              ${meta("Image bytes", Number(observation.bytes || 0).toLocaleString())}
+              ${meta("Frames advanced", execution?.frames_advanced ?? "pending")}
+              ${meta("Confidence", effective.confidence ?? "unknown")}
+              ${meta("Scene", effective.scene || call?.output?.provider_response?.scene || "unknown")}
+            </div>
+            <details><summary>Exact raw model output</summary><pre>${formatRaw(call.raw_model_response_text)}</pre></details>
+            <details><summary>Exact model input</summary><pre>${formatJson(call.input)}</pre></details>
+            <details><summary>Parsed and effective output</summary><pre>${formatJson(call.output)}</pre></details>
+            <details><summary>Exact controller execution</summary><pre>${formatJson(execution || {status: "pending"})}</pre></details>
+          </div>
+        </div>`;
+    }
+
+    function applyTrace(next) {
+      const nextStarted = next?.capture?.started_unix ?? null;
+      if (captureStarted !== null && nextStarted !== captureStarted) {
+        document.getElementById("rows").innerHTML = '<div class="empty" id="empty">Waiting for the first model call.</div>';
+        renderedCalls = 0;
+        executionFingerprints = new Map();
+        selectedCall = null;
+        document.getElementById("inspector").innerHTML = '<div class="empty">Select a decision row to inspect its exact input and output.</div>';
+      }
+      captureStarted = nextStarted;
+      trace = next;
+      while (renderedCalls < trace.calls.length) {
+        appendCall(trace.calls[renderedCalls]);
+        renderedCalls += 1;
+      }
+      trace.executions.forEach(execution => {
+        const fingerprint = JSON.stringify(execution);
+        if (executionFingerprints.get(execution.execution) !== fingerprint) {
+          executionFingerprints.set(execution.execution, fingerprint);
+          updateExecution(execution);
+        }
+      });
+      updateMetrics();
+      if (document.getElementById("follow").checked && trace.calls.length) {
+        const latest = trace.calls.at(-1).call;
+        if (selectedCall !== latest) selectCall(latest, true);
+        document.getElementById(`call-row-${latest}`)?.scrollIntoView({block: "nearest"});
+      } else if (selectedCall === null && trace.calls.length) {
+        selectCall(trace.calls[0].call, true);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch(`/api/trace?t=${Date.now()}`, {cache: "no-store"});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const next = await response.json();
+        const signature = `${next?.capture?.started_unix || 0}:${next?.capture?.updated_unix || 0}:${next?.calls?.length || 0}:${next?.executions?.length || 0}`;
+        document.getElementById("connection").textContent = "Live trace connected";
+        if (signature !== lastSignature) {
+          lastSignature = signature;
+          applyTrace(next);
+        }
+      } catch (error) {
+        document.getElementById("connection").textContent = `Trace unavailable: ${error.message}`;
+      }
+    }
+
+    document.getElementById("follow").addEventListener("change", event => {
+      if (event.target.checked && trace.calls.length) {
+        selectCall(trace.calls.at(-1).call, true);
+        document.getElementById(`call-row-${trace.calls.at(-1).call}`)?.scrollIntoView({block: "nearest"});
+      }
+    });
+    refresh();
+    setInterval(refresh, 750);
+  </script>
+</body>
+</html>

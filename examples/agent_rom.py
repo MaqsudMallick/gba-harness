@@ -79,7 +79,17 @@ def main(argv: list[str] | None = None) -> int:
     telemetry: NeatlogsSession | None = None
     try:
         with (
-            NeatlogsSession(neatlogs_key, endpoint=settings.neatlogs_endpoint) as telemetry,
+            NeatlogsSession(
+                neatlogs_key,
+                # Each controller is a separately-triggerable task, so each gets its own
+                # workflow: one deterministic vision policy, one cloud-model agent.
+                workflow_name=(
+                    "mario-level-clear-local-vision"
+                    if args.controller == "local"
+                    else "mario-level-clear-model-agent"
+                ),
+                endpoint=settings.neatlogs_endpoint,
+            ) as telemetry,
             LibretroInputPort(
                 rom,
                 core=find_core(settings.libretro_core),

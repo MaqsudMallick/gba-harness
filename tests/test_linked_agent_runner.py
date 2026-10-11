@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ from gbharness.agent.team import TeamDecision, TeamDecisionRequest
 from gbharness.agent.zelda import FOUR_SWORDS_POLICY
 from gbharness.buttons import Button
 from gbharness.multiplayer import LinkedSession
+from gbharness.observability import io_attributes
 from gbharness.vision.capture import FrameLatch, RawFrame
 
 
@@ -133,18 +135,24 @@ class RecordingTelemetry:
         name: str,
         kind: str,
         *,
-        capture_input: bool = False,
-        capture_output: bool = False,
+        input_value: object | None = None,
+        output_value: object | None = None,
         attributes: Mapping[str, object] | None = None,
     ) -> Iterator[str]:
-        del capture_input, capture_output
+        recorded = dict(attributes or {})
+        recorded.update(
+            io_attributes(kind, input_value=input_value, output_value=output_value)
+        )
         with self._lock:
-            self.spans.append((name, kind, dict(attributes or {})))
+            self.spans.append((name, kind, recorded))
         yield name
 
     def annotate(self, span: str, attributes: Mapping[str, object]) -> None:
         with self._lock:
             self.annotations.setdefault(span, {}).update(attributes)
+
+    def record_output(self, span: str, kind: str, value: object) -> None:
+        self.annotate(span, io_attributes(kind, output_value=value))
 
     def log(self, template: str, **values: object) -> None:
         del template, values
@@ -451,7 +459,41 @@ def test_visual_probe_overlap_releases_all_agents() -> None:
     assert result.turns[0].team_stage == "reach_warps"
 
 
+def test_model_cannot_complete_before_visual_target_confirmation() -> None:
+    source = HumanActionSource()
+    captain = FakeTeamProvider(stage="complete")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=1, max_model_calls=1),
+        team_provider=captain,
+        team_target_detector=lambda _views: False,
+    )
+    runner._team_stage = "reach_warps"
+
+    result = runner.run()
+
+    assert result.status == "turn_limit"
+    assert result.turns[0].team_stage == "reach_warps"
+
+
 def test_team_captain_assigns_three_actions_with_one_model_call() -> None:
+    telemetry = RecordingTelemetry()
     source = HumanActionSource()
     captain = FakeTeamProvider()
     assigned = (
@@ -474,6 +516,7 @@ def test_team_captain_assigns_three_actions_with_one_model_call() -> None:
         policy=FOUR_SWORDS_POLICY,
         config=LinkedRunnerConfig(max_turns=1, max_model_calls=1),
         team_provider=captain,
+        telemetry=telemetry,
     )
 
     result = runner.run()
@@ -490,3 +533,12 @@ def test_team_captain_assigns_three_actions_with_one_model_call() -> None:
     assert result.turns[0].team_instruction == "P1 hold the left switch."
     assert result.turns[0].captain == "vertex:captain"
     assert captain.requests[0].ai_players == (1, 2, 3)
+    plan_trace = telemetry.annotations["rotating_team_captain_plan"]
+    plan_input = json.loads(cast(str, plan_trace["neatlogs.agent.input"]))
+    plan_output = json.loads(cast(str, plan_trace["neatlogs.agent.output"]))
+    assert plan_input["goal"] == FOUR_SWORDS_POLICY.goal
+    assert plan_input["observation"]["sha256"]
+    assert plan_output["objective"] == "occupy both switches"
+    assert plan_output["decisions"]["P2"]["decision_reason"] == (
+        "Follow the joint plan."
+    )

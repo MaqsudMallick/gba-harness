@@ -1,4 +1,4 @@
-"""Run four Vertex visual agents against one linked Zelda: Four Swords session.
+"""Run a Vertex team agent against one linked Zelda: Four Swords session.
 
 The user-owned ROM stays local under ``roms/``. Use ``--smoke`` to verify the four linked
 consoles without spending model calls, then remove it for a bounded, Neatlogs-traced run.
@@ -31,7 +31,6 @@ from gbharness.agent import (
     VertexTeamDecisionProvider,
     bootstrap_four_swords,
     four_swords_dialogue_visible,
-    four_swords_probe_target_reached,
     solve_first_training_puzzle,
 )
 from gbharness.backends import LibretroMultiplayerPort, find_multiplayer_core, validate_rom
@@ -42,12 +41,7 @@ from gbharness.vision.capture import FrameLatch
 from gbharness.vision.encode import to_png, to_rgb
 
 DEFAULT_ROM = Path("roms/Legend of Zelda, The - A Link to the Past & Four Swords (USA).gba")
-DEFAULT_MODELS = (
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-3-flash-preview",
-)
+DEFAULT_MODELS = ("gemini-2.5-flash",)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -65,12 +59,12 @@ def parser() -> argparse.ArgumentParser:
         "--max-model-calls",
         type=int,
         default=12,
-        help="hard ceiling; coordinated human mode costs one rotating-captain call per turn",
+        help="hard ceiling; coordinated human mode costs one team-agent call per turn",
     )
     result.add_argument(
         "--models",
         default=os.environ.get("GBHARNESS_ZELDA_MODELS", ",".join(DEFAULT_MODELS)),
-        help="four comma-separated Vertex model IDs; a human player's entry is unused",
+        help="one Vertex model ID; four IDs remain supported for compatibility",
     )
     result.add_argument(
         "--human-player",
@@ -81,7 +75,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--npc-autopilot",
         action="store_true",
-        help="let the team planner move P1 and complete visible NPC dialogue without combat",
+        help="let the designated AI Link complete visible NPC dialogue without combat",
     )
     result.add_argument(
         "--smoke",
@@ -128,8 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.boot_frames < 1:
         raise SystemExit("--boot-frames must be positive")
     models = tuple(model.strip() for model in args.models.split(",") if model.strip())
-    if len(models) != 4:
-        raise SystemExit(f"--models needs exactly four Vertex model IDs, got {len(models)}")
+    if len(models) not in {1, 4}:
+        raise SystemExit(f"--models needs one or four Vertex model IDs, got {len(models)}")
+    if len(models) == 1:
+        models = models * 4
+    active_models = tuple(dict.fromkeys(models))
     human_player = args.human_player if args.human_player is not None else (1 if args.live else 0)
     if human_player and not args.live:
         raise SystemExit("--human-player requires --live so keyboard input can be captured")
@@ -182,6 +179,21 @@ def main(argv: list[str] | None = None) -> int:
                 human_actions = HumanActionSource() if human_player else None
                 assignments: list[PlayerAssignment] = []
                 ai_providers: list[VertexDecisionProvider] = []
+                shared_provider: VertexDecisionProvider | None = None
+                if human_player:
+                    vertex = VertexDecisionProvider(
+                        project=project,
+                        location=settings.google_cloud_location,
+                        model=models[0],
+                    )
+                    shared_provider = vertex.with_client(
+                        telemetry.wrap(
+                            vertex.client,
+                            game=FOUR_SWORDS_POLICY.name,
+                            role="shared team captain",
+                        )
+                    )
+                    ai_providers.append(shared_provider)
                 for player, (model, role) in enumerate(zip(models, FOUR_SWORDS_ROLES, strict=True)):
                     if human_actions is not None and player == human_player - 1:
                         assignments.append(
@@ -208,20 +220,23 @@ def main(argv: list[str] | None = None) -> int:
                                 "plate or flank route and tell P1 which position to hold."
                             ),
                         }.get(player, role)
-                    vertex = VertexDecisionProvider(
-                        project=project,
-                        location=settings.google_cloud_location,
-                        model=model,
-                    )
-                    provider = vertex.with_client(
-                        telemetry.wrap(
-                            vertex.client,
-                            game=FOUR_SWORDS_POLICY.name,
-                            player=player + 1,
-                            role=role,
+                    if shared_provider is not None:
+                        provider = shared_provider
+                    else:
+                        vertex = VertexDecisionProvider(
+                            project=project,
+                            location=settings.google_cloud_location,
+                            model=model,
                         )
-                    )
-                    ai_providers.append(provider)
+                        provider = vertex.with_client(
+                            telemetry.wrap(
+                                vertex.client,
+                                game=FOUR_SWORDS_POLICY.name,
+                                player=player + 1,
+                                role=role,
+                            )
+                        )
+                        ai_providers.append(provider)
                     assignments.append(PlayerAssignment(player, role, provider))
 
                 target_navigator = (
@@ -237,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
                         max_model_calls=args.max_model_calls,
                         confidence_threshold=settings.confidence_threshold,
                         max_consecutive_errors=args.max_consecutive_errors,
-                        autoplay_human_dialogue=args.npc_autopilot,
+                        autoplay_human_dialogue=False,
                     ),
                     team_provider=(
                         VertexTeamDecisionProvider(
@@ -254,7 +269,9 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     visual_plan_override=target_navigator,
                     probe_target_detector=(
-                        four_swords_probe_target_reached if args.npc_autopilot else None
+                        target_navigator.probe_target_reached
+                        if target_navigator is not None
+                        else None
                     ),
                     team_target_detector=(
                         target_navigator.all_assigned_players_reached
@@ -290,6 +307,21 @@ def main(argv: list[str] | None = None) -> int:
                     with telemetry.span(
                         "four_swords_puzzle_attempt",
                         "WORKFLOW",
+                        input_value={
+                            "game": FOUR_SWORDS_POLICY.name,
+                            "goal": FOUR_SWORDS_POLICY.goal,
+                            "participant_mode": (
+                                "one_human_three_vertex_agents"
+                                if human_player
+                                else "four_vertex_agents"
+                            ),
+                            "human_player": human_player,
+                            "npc_autopilot": args.npc_autopilot,
+                            "models": list(active_models),
+                            "max_turns": args.max_turns,
+                            "max_model_calls": args.max_model_calls,
+                            "walkthrough_access": False,
+                        },
                         attributes={
                             "game": FOUR_SWORDS_POLICY.name,
                             "objective": FOUR_SWORDS_POLICY.goal,
@@ -300,9 +332,9 @@ def main(argv: list[str] | None = None) -> int:
                                 else "four_vertex_agents"
                             ),
                             "human.player": human_player,
-                            "human.npc_autopilot": args.npc_autopilot,
+                            "agent.npc_autopilot": args.npc_autopilot,
                             "runtime.walkthrough_access": False,
-                            "models": ",".join(models),
+                            "models": ",".join(active_models),
                             "puzzle.prelude_enabled": prelude is not None,
                         },
                     ) as root_span:
@@ -330,6 +362,29 @@ def main(argv: list[str] | None = None) -> int:
                                 "run.model_calls": episode.model_calls,
                                 "run.input_tokens": episode.input_tokens,
                                 "run.output_tokens": episode.output_tokens,
+                            },
+                        )
+                        telemetry.record_output(
+                            root_span,
+                            "WORKFLOW",
+                            {
+                                "status": episode.status,
+                                "turns": len(episode.turns),
+                                "frames": episode.total_frames,
+                                "model_calls": episode.model_calls,
+                                "input_tokens": episode.input_tokens,
+                                "output_tokens": episode.output_tokens,
+                                "providers": list(episode.providers),
+                                "final_stage": (
+                                    episode.turns[-1].team_stage
+                                    if episode.turns
+                                    else "not_started"
+                                ),
+                                "last_instruction": (
+                                    episode.turns[-1].team_instruction
+                                    if episode.turns
+                                    else ""
+                                ),
                             },
                         )
                         return episode
@@ -448,12 +503,9 @@ def _run_live(
             with runner.telemetry.span(
                 f"player_{human_player}_free_play_action",
                 "TOOL",
+                input_value={"action": action, "phase": "free play after agent episode"},
                 attributes={
                     "neatlogs.tool.name": "human_keyboard_controller",
-                    "neatlogs.tool.description": (
-                        "Execute human free play after the bounded agent episode"
-                    ),
-                    "neatlogs.tool.parameters": action,
                     "player.number": human_player,
                     "free_play.action_index": action_count + 1,
                     "frame.before": runner.session.frame,
@@ -467,6 +519,15 @@ def _run_live(
                         "frame.after": result.total_frames,
                         "frames.advanced": result.frames_advanced,
                         "emulation.ended": result.emulation_ended,
+                    },
+                )
+                runner.telemetry.record_output(
+                    action_span,
+                    "TOOL",
+                    {
+                        "frame_after": result.total_frames,
+                        "frames_advanced": result.frames_advanced,
+                        "emulation_ended": result.emulation_ended,
                     },
                 )
             phase[0] = f"P{human_player} FREE PLAY — {action}"

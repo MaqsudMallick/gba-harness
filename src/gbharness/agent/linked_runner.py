@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import threading
 from collections import deque
@@ -160,6 +161,21 @@ class LinkedAgentRunner:
         with self.telemetry.span(
             "coordinate_four_player_decisions",
             "CHAIN",
+            input_value={
+                "game": self.policy.name,
+                "goal": self.policy.goal,
+                "participants": [
+                    {
+                        "player": assignment.player + 1,
+                        "type": assignment.participant_type,
+                        "provider": assignment.provider.name,
+                        "role": assignment.role,
+                    }
+                    for assignment in self.assignments
+                ],
+                "turn_limit": self.config.max_turns,
+                "model_call_limit": self.config.max_model_calls,
+            },
             attributes={
                 "game": self.policy.name,
                 "participant.count": len(self.assignments),
@@ -282,18 +298,18 @@ class LinkedAgentRunner:
                 with self.telemetry.span(
                     "verify_team_completion",
                     "GUARDRAIL",
-                    attributes={
-                        "neatlogs.guardrail.input": json.dumps(
-                            [
-                                decision.terminal
-                                for assignment, decision in zip(
-                                    self.assignments, decisions, strict=True
-                                )
-                                if assignment.participant_type == "agent"
-                            ]
-                        ),
-                        "turn": turn,
+                    input_value={
+                        "question": "do all agents report the objective complete?",
+                        "votes": {
+                            f"P{assignment.player + 1}": decision.terminal
+                            for assignment, decision in zip(
+                                self.assignments, decisions, strict=True
+                            )
+                            if assignment.participant_type == "agent"
+                        },
+                        "confirmations_required": self.config.terminal_confirmations,
                     },
+                    attributes={"turn": turn},
                 ) as guardrail_span:
                     terminal_votes = [
                         decision.terminal
@@ -303,14 +319,14 @@ class LinkedAgentRunner:
                     unanimous = bool(terminal_votes) and all(terminal_votes)
                     terminal_count = terminal_count + 1 if unanimous else 0
                     passed = terminal_count >= self.config.terminal_confirmations
-                    self.telemetry.annotate(
+                    self.telemetry.annotate(guardrail_span, {"neatlogs.guardrail.passed": passed})
+                    self.telemetry.record_output(
                         guardrail_span,
+                        "GUARDRAIL",
                         {
-                            "neatlogs.guardrail.passed": passed,
-                            "neatlogs.guardrail.output": (
-                                f"{terminal_count}/{self.config.terminal_confirmations} "
-                                "consecutive unanimous confirmations"
-                            ),
+                            "passed": passed,
+                            "consecutive_unanimous": terminal_count,
+                            "confirmations_required": self.config.terminal_confirmations,
                         },
                     )
                 if passed:
@@ -337,17 +353,25 @@ class LinkedAgentRunner:
                     f"P{assignment.player + 1}": list(action_plans[index])
                     for index, assignment in enumerate(self.assignments)
                 }
+                execution_stage = self._team_stage
+                frame_before = self.session.frame
+                controller_input = json.dumps(
+                    {
+                        "turn": turn,
+                        "stage": execution_stage,
+                        "frame_before": frame_before,
+                        "plans": action_summary,
+                    },
+                    sort_keys=True,
+                )
                 with self.telemetry.span(
                     "execute_synchronized_controller_actions",
                     "TOOL",
+                    input_value=controller_input,
                     attributes={
                         "neatlogs.tool.name": "linked_controller",
-                        "neatlogs.tool.description": (
-                            "Execute a bounded multi-step team plan on one emulator clock"
-                        ),
-                        "neatlogs.tool.parameters": json.dumps(action_summary, sort_keys=True),
                         "turn": turn,
-                        "frame.before": self.session.frame,
+                        "frame.before": frame_before,
                     },
                 ) as controller_span:
                     result, executed_plans = self._execute_plans(action_plans)
@@ -360,6 +384,19 @@ class LinkedAgentRunner:
                             "plan.steps": max(len(plan) for plan in executed_plans),
                         },
                     )
+                    self.telemetry.record_output(
+                        controller_span,
+                        "TOOL",
+                        {
+                            "frame_after": result.total_frames,
+                            "frames_advanced": result.frames_advanced,
+                            "emulation_ended": result.emulation_ended,
+                            "executed_plans": {
+                                f"P{assignment.player + 1}": list(executed_plans[index])
+                                for index, assignment in enumerate(self.assignments)
+                            },
+                        },
+                    )
                 recorded_plans = tuple(
                     (action_keys[index],)
                     if assignment.participant_type == "human"
@@ -370,6 +407,7 @@ class LinkedAgentRunner:
                 after_frame = self.frames.require()
                 after_views = split_player_frames(after_frame, len(self.assignments))
                 after_rgbs = tuple(to_rgb(view) for view in after_views)
+                after_pngs = tuple(to_png(view) for view in after_views)
                 dialogue_after = (
                     self.dialogue_detector(after_frame)
                     if self.dialogue_detector is not None
@@ -401,24 +439,46 @@ class LinkedAgentRunner:
                     if _meaningful_visual_change(before, after)
                 )
                 progress_detected = bool(changed_players)
+                progress_passed = progress_detected or visual_team_complete
+                progress_input = json.dumps(
+                    {
+                        "turn": turn,
+                        "stage": execution_stage,
+                        "frame": frame_before,
+                        "screens": _image_evidence(pngs),
+                        "plans": action_summary,
+                    },
+                    sort_keys=True,
+                )
+                progress_output = json.dumps(
+                    {
+                        "turn": turn,
+                        "stage_before": execution_stage,
+                        "stage_after": self._team_stage,
+                        "frame": result.total_frames,
+                        "screens": _image_evidence(after_pngs),
+                        "changed_players": list(changed_players),
+                        "team_target_complete": visual_team_complete,
+                    },
+                    sort_keys=True,
+                )
                 with self.telemetry.span(
                     "verify_visual_plan_progress",
                     "GUARDRAIL",
+                    input_value=progress_input,
+                    output_value=progress_output,
                     attributes={
                         "turn": turn,
                         "plan.steps": max(len(plan) for plan in executed_plans),
                         "changed.players": ",".join(map(str, changed_players)),
+                        "stage.before": execution_stage,
+                        "stage.after": self._team_stage,
                     },
                 ) as progress_span:
                     self.telemetry.annotate(
                         progress_span,
                         {
-                            "neatlogs.guardrail.passed": progress_detected,
-                            "neatlogs.guardrail.output": (
-                                "meaningful viewport change detected"
-                                if progress_detected
-                                else "no meaningful viewport changed; replan as blocked"
-                            ),
+                            "neatlogs.guardrail.passed": progress_passed,
                         },
                     )
                 record = self._record(
@@ -460,6 +520,25 @@ class LinkedAgentRunner:
                     "episode.output_tokens": output_tokens,
                 },
             )
+            self.telemetry.record_output(
+                episode_span,
+                "CHAIN",
+                {
+                    "status": status,
+                    "turns": len(records),
+                    "total_frames": self.session.frame,
+                    "model_calls": calls,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "final_stage": self._team_stage,
+                    "final_actions": {
+                        f"P{player.player + 1}": list(player.plan)
+                        for player in records[-1].players
+                    }
+                    if records
+                    else {},
+                },
+            )
 
         return LinkedEpisodeResult(
             status=status,
@@ -498,16 +577,17 @@ class LinkedAgentRunner:
                 "allowed.actions": ",".join(option.key for option in request.actions),
             }
             if is_human:
-                attributes.update(
-                    {
-                        "neatlogs.tool.name": "human_keyboard_controller",
-                        "neatlogs.tool.description": "Capture one bounded player action",
-                        "neatlogs.tool.parameters": "keyboard action queue",
-                    }
-                )
+                attributes["neatlogs.tool.name"] = "human_keyboard_controller"
             with self.telemetry.span(
                 span_name,
                 span_kind,
+                input_value={
+                    "goal": request.goal,
+                    "state": request.state,
+                    "role": assignment.role,
+                    "observation_bytes": len(request.image_png),
+                    "allowed_actions": [option.key for option in request.actions],
+                },
                 attributes=attributes,
             ) as decision_span:
                 decision = assignment.provider.decide(request)
@@ -524,6 +604,20 @@ class LinkedAgentRunner:
                         "decision.note": decision.note,
                         "usage.input_tokens": decision.input_tokens,
                         "usage.output_tokens": decision.output_tokens,
+                    },
+                )
+                self.telemetry.record_output(
+                    decision_span,
+                    span_kind,
+                    {
+                        "action": decision.action,
+                        "confidence": decision.confidence,
+                        "scene": decision.scene,
+                        "terminal": decision.terminal,
+                        "progress": decision.progress,
+                        "note": decision.note,
+                        "input_tokens": decision.input_tokens,
+                        "output_tokens": decision.output_tokens,
                     },
                 )
                 return decision
@@ -564,12 +658,12 @@ class LinkedAgentRunner:
                     with self.telemetry.span(
                         f"player_{assignment.player + 1}_live_action",
                         "TOOL",
+                        input_value={
+                            "action": action,
+                            "while": "teammate agents are reasoning",
+                        },
                         attributes={
                             "neatlogs.tool.name": "human_keyboard_controller",
-                            "neatlogs.tool.description": (
-                                "Execute a human action while teammate agents are reasoning"
-                            ),
-                            "neatlogs.tool.parameters": action,
                             "player.number": assignment.player + 1,
                             "turn": turn,
                             "frame.before": self.session.frame,
@@ -584,6 +678,15 @@ class LinkedAgentRunner:
                                 "frame.after": result.total_frames,
                                 "frames.advanced": result.frames_advanced,
                                 "emulation.ended": result.emulation_ended,
+                            },
+                        )
+                        self.telemetry.record_output(
+                            human_span,
+                            "TOOL",
+                            {
+                                "frame_after": result.total_frames,
+                                "frames_advanced": result.frames_advanced,
+                                "emulation_ended": result.emulation_ended,
                             },
                         )
                     live_actions[index].append(action)
@@ -608,10 +711,9 @@ class LinkedAgentRunner:
             with self.telemetry.span(
                 f"player_{assignment.player + 1}_human_input",
                 "TOOL",
+                input_value={"actions": actions},
                 attributes={
                     "neatlogs.tool.name": "human_keyboard_controller",
-                    "neatlogs.tool.description": "Summarize live human control during reasoning",
-                    "neatlogs.tool.parameters": json.dumps(actions),
                     "player.number": assignment.player + 1,
                     "turn": turn,
                     "human.action_count": len(actions),
@@ -630,6 +732,16 @@ class LinkedAgentRunner:
                         "decision.confidence": decision.confidence,
                         "decision.scene": decision.scene,
                         "decision.note": decision.note,
+                    },
+                )
+                self.telemetry.record_output(
+                    human_summary_span,
+                    "TOOL",
+                    {
+                        "action": decision.action,
+                        "action_count": len(actions),
+                        "scene": decision.scene,
+                        "note": decision.note,
                     },
                 )
                 outcomes[index] = decision
@@ -669,13 +781,34 @@ class LinkedAgentRunner:
         self._team_model_calls = int(getattr(team_provider, "calls_per_plan", 1))
         self._team_plans = {}
         self._team_human_plan = ()
+        fallback_input_json = json.dumps(
+            {
+                "goal": team_request.goal,
+                "stage_before": team_request.stage,
+                "turn": team_request.turn,
+                "shared_state": team_request.state,
+                "allowed_actions": [option.key for option in team_request.actions],
+                "ai_players": [player + 1 for player in team_request.ai_players],
+                "observation": {
+                    "mime_type": "image/png",
+                    "bytes": len(composite_png),
+                    "sha256": hashlib.sha256(composite_png).hexdigest(),
+                },
+            },
+            sort_keys=True,
+        )
 
         def plan() -> TeamDecision:
             with self.telemetry.span(
                 "rotating_team_captain_plan",
                 "AGENT",
+                input_value=fallback_input_json,
                 attributes={
                     "team.provider": team_provider.name,
+                    "neatlogs.agent.name": "four_swords_team_captain",
+                    "neatlogs.agent.role": (
+                        "Observe the current game state and choose one coordinated team plan"
+                    ),
                     "turn": turn,
                     "ai.players": ",".join(f"P{player + 1}" for player in ai_players),
                     "observation.bytes": len(composite_png),
@@ -685,6 +818,8 @@ class LinkedAgentRunner:
                 self.telemetry.annotate(
                     plan_span,
                     {
+                        "neatlogs.agent.input": decision.trace_input_json
+                        or fallback_input_json,
                         "team.captain": decision.captain,
                         "team.objective": decision.objective,
                         "team.stage": decision.stage,
@@ -710,6 +845,12 @@ class LinkedAgentRunner:
                         "usage.output_tokens": decision.output_tokens,
                     },
                 )
+                self.telemetry.record_output(
+                    plan_span,
+                    "AGENT",
+                    decision.trace_output_json
+                    or _team_decision_json(decision, team_request.stage),
+                )
                 return decision
 
         live_humans = {
@@ -733,9 +874,9 @@ class LinkedAgentRunner:
                     with self.telemetry.span(
                         f"player_{assignment.player + 1}_live_action",
                         "TOOL",
+                        input_value={"action": action, "while": "team captain planning"},
                         attributes={
                             "neatlogs.tool.name": "human_keyboard_controller",
-                            "neatlogs.tool.parameters": action,
                             "player.number": assignment.player + 1,
                             "turn": turn,
                             "frame.before": self.session.frame,
@@ -749,6 +890,14 @@ class LinkedAgentRunner:
                             {
                                 "frame.after": result.total_frames,
                                 "frames.advanced": result.frames_advanced,
+                            },
+                        )
+                        self.telemetry.record_output(
+                            human_span,
+                            "TOOL",
+                            {
+                                "frame_after": result.total_frames,
+                                "frames_advanced": result.frames_advanced,
                             },
                         )
                     live_actions[index].append(action)
@@ -776,9 +925,35 @@ class LinkedAgentRunner:
                 outcomes.append(team)
                 continue
             decision = team.decisions[assignment.player]
+            assigned_input = json.dumps(
+                {
+                    "turn": turn,
+                    "player": assignment.player + 1,
+                    "role": assignment.role,
+                    "team_captain": team.captain,
+                    "team_objective": team.objective,
+                    "team_stage": team.stage,
+                    "scene": decision.scene,
+                    "decision_reason": decision.note,
+                    "assigned_plan": list(
+                        team.plans.get(assignment.player, (decision.action,))
+                    ),
+                },
+                sort_keys=True,
+            )
+            assigned_output = json.dumps(
+                {
+                    "action": decision.action,
+                    "confidence": decision.confidence,
+                    "terminal": decision.terminal,
+                },
+                sort_keys=True,
+            )
             with self.telemetry.span(
                 f"player_{assignment.player + 1}_assigned_team_action",
                 "AGENT",
+                input_value=assigned_input,
+                output_value=assigned_output,
                 attributes={
                     "player.number": assignment.player + 1,
                     "team.captain": team.captain,
@@ -829,6 +1004,8 @@ class LinkedAgentRunner:
         )
         if proposed not in stages or self._team_stage not in stages:
             return proposed
+        if proposed == "complete" and self.team_target_detector is not None:
+            return self._team_stage
         current = stages.index(self._team_stage)
         candidate = stages.index(proposed)
         if candidate <= current:
@@ -1048,3 +1225,52 @@ def _meaningful_visual_change(
     )
     changed = float(np.count_nonzero(difference > 32)) / float(difference.size)
     return changed >= changed_pixel_fraction
+
+
+def _image_evidence(images: tuple[bytes, ...]) -> list[dict[str, object]]:
+    """Create compact evidence that links each visual state to its captured image."""
+    return [
+        {
+            "player": player + 1,
+            "mime_type": "image/png",
+            "bytes": len(image),
+            "sha256": hashlib.sha256(image).hexdigest(),
+        }
+        for player, image in enumerate(images)
+    ]
+
+
+def _team_decision_json(decision: TeamDecision, stage_before: str) -> str:
+    """Serialize a team decision when a provider does not supply trace JSON."""
+    return json.dumps(
+        {
+            "captain": decision.captain,
+            "scene": next(
+                (item.scene for item in decision.decisions.values()),
+                "unknown",
+            ),
+            "stage_before": stage_before,
+            "stage_after": decision.stage,
+            "objective": decision.objective,
+            "human_instruction": decision.human_instruction,
+            "human_plan": list(decision.human_plan),
+            "player_plans": {
+                f"P{player + 1}": list(plan) for player, plan in decision.plans.items()
+            },
+            "decisions": {
+                f"P{player + 1}": {
+                    "action": item.action,
+                    "confidence": item.confidence,
+                    "scene": item.scene,
+                    "decision_reason": item.note,
+                    "terminal": item.terminal,
+                }
+                for player, item in decision.decisions.items()
+            },
+            "usage": {
+                "input_tokens": decision.input_tokens,
+                "output_tokens": decision.output_tokens,
+            },
+        },
+        sort_keys=True,
+    )
