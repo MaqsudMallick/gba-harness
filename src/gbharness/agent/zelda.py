@@ -251,7 +251,7 @@ class FourSwordsVisualTargetNavigator:
             active_targets = _active_target_centres(rgb)
             grid = _forward_marked_target_grid(rgb)
             if grid is None:
-                plans[player] = _forward_exploration_step(rgb, position)
+                plans[player] = _forward_portal_search_step(rgb, position)
                 continue
             target = grid[self.assignments[player]]
             active_now = any(
@@ -589,6 +589,16 @@ def _forward_exploration_step(
     if abs(dx) <= 7:
         return ("move_up",)
     return _precision_route_step(position, (opening[0], position[1]))
+
+
+def _forward_portal_search_step(
+    rgb: np.ndarray,
+    position: tuple[int, int],
+) -> tuple[str, ...]:
+    """Leave a visible return grid toward the forward grid below it."""
+    if _forward_target_grid(rgb) is not None:
+        return ("move_down",)
+    return _forward_exploration_step(rgb, position)
 
 
 def _visible_wall_opening(

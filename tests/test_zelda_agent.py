@@ -7,6 +7,7 @@ import numpy as np
 from gbharness.agent.zelda import (
     FourSwordsVisualTargetNavigator,
     _forward_marked_target_grid,
+    _forward_portal_search_step,
     _link_position,
     _order_target_grid,
     _target_grids,
@@ -313,6 +314,16 @@ def test_forward_grid_rejects_the_return_portal_marker() -> None:
 
     rgb[58:68, 90:100] = (222, 40, 165)
     assert _forward_marked_target_grid(rgb) is not None
+
+
+def test_portal_search_moves_down_from_a_visible_return_grid() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    for x, y in ((70, 40), (120, 40), (70, 88), (120, 88)):
+        rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+        rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+    rgb[58:68, 90:100] = (190, 30, 25)
+
+    assert _forward_portal_search_step(rgb, (150, 75)) == ("move_down",)
 
 
 def test_target_grid_order_ignores_small_vertical_jitter() -> None:
