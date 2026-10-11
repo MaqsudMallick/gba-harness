@@ -248,7 +248,7 @@ class FourSwordsVisualTargetNavigator:
 
             orange_targets = _orange_target_centres(rgb)
             all_targets = _merge_target_centres(orange_targets, active_targets)
-            ordered_targets = sorted(all_targets, key=lambda point: (point[1], point[0]))
+            ordered_targets = _order_target_grid(all_targets)
             if len(ordered_targets) >= 4:
                 target = ordered_targets[self.assignments[player]]
             elif orange_targets:
@@ -479,6 +479,18 @@ def _merge_target_centres(
         if all(_squared_distance(target, existing) > 12 * 12 for existing in merged):
             merged.append(target)
     return tuple(merged)
+
+
+def _order_target_grid(
+    targets: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], ...]:
+    """Order four targets as upper-left, upper-right, lower-left, lower-right."""
+    if len(targets) != 4:
+        return tuple(sorted(targets, key=lambda point: (point[1], point[0])))
+    vertical = sorted(targets, key=lambda point: point[1])
+    upper = sorted(vertical[:2], key=lambda point: point[0])
+    lower = sorted(vertical[2:], key=lambda point: point[0])
+    return tuple((*upper, *lower))
 
 
 def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:

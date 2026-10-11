@@ -6,6 +6,7 @@ import numpy as np
 
 from gbharness.agent.zelda import (
     FourSwordsVisualTargetNavigator,
+    _order_target_grid,
     bootstrap_four_swords,
     first_training_reward_visible,
     four_swords_dialogue_visible,
@@ -247,6 +248,17 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     reached_plans = navigator("reach_warps", tuple(reached_views))
     assert reached_plans == {1: ("wait",), 2: ("wait",), 3: ("wait",)}
     assert navigator.all_assigned_players_reached(tuple(reached_views))
+
+
+def test_target_grid_order_ignores_small_vertical_jitter() -> None:
+    targets = ((160, 91), (110, 92), (160, 140), (110, 141))
+
+    assert _order_target_grid(targets) == (
+        (110, 92),
+        (160, 91),
+        (110, 141),
+        (160, 140),
+    )
 
 
 def test_visual_target_navigator_keeps_p2_on_a_covered_probe_target() -> None:
