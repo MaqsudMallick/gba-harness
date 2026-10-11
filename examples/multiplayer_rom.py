@@ -11,13 +11,19 @@ from pathlib import Path
 
 import pygame
 
-from gbharness.agent.mario_kart import open_linked_lobby
+from gbharness.agent.mario_kart import (
+    MarioKartVisionAgent,
+    open_linked_lobby,
+    start_quick_race,
+)
+from gbharness.agent.multiplayer import AutonomousPlayer, PlayerDecision
 from gbharness.backends import LibretroMultiplayerPort, find_multiplayer_core, validate_rom
-from gbharness.buttons import Button
+from gbharness.buttons import Button, canon_sort
 from gbharness.multiplayer import LinkedSession
 from gbharness.timing import FRAME_RATE
 from gbharness.vision.capture import FrameLatch
 from gbharness.vision.encode import to_png, to_rgb
+from gbharness.vision.multiplayer import split_player_frames
 
 P1_KEYS: dict[int, Button] = {
     pygame.K_UP: Button.UP,
@@ -60,6 +66,22 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="automatically reach the linked 2P/3P/4P Mario Kart mode menu",
     )
+    result.add_argument(
+        "--quick-race",
+        action="store_true",
+        help="choose default racers and Mushroom Cup (implies --mario-kart-lobby)",
+    )
+    result.add_argument(
+        "--agent",
+        choices=("mario-kart",),
+        help="local visual game adapter controlling one linked player",
+    )
+    result.add_argument(
+        "--agent-player",
+        type=int,
+        default=2,
+        help="one-based player controlled by --agent (default: 2)",
+    )
     return result
 
 
@@ -77,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--scale must be at least 1")
     if args.max_frames is not None and args.max_frames < 1:
         raise SystemExit("--max-frames must be at least 1")
+    if not 1 <= args.agent_player <= args.players:
+        raise SystemExit(f"--agent-player must be between 1 and {args.players}")
     if not args.rom.is_file():
         raise SystemExit(f"ROM does not exist: {args.rom}")
 
@@ -92,22 +116,54 @@ def main(argv: list[str] | None = None) -> int:
         frame_sink=latch.sink,
     ) as port:
         port.start_linked_session()
-        if args.mario_kart_lobby:
-            open_linked_lobby(LinkedSession(port, max_step_frames=1800))
+        linked = LinkedSession(port, max_step_frames=1800)
+        if args.mario_kart_lobby or args.quick_race:
+            open_linked_lobby(linked)
+        if args.quick_race:
+            start_quick_race(
+                linked,
+                lambda: to_rgb(split_player_frames(latch.require(), args.players)[0]),
+            )
+        autonomous = (
+            AutonomousPlayer(
+                player=args.agent_player - 1,
+                players=args.players,
+                agent=MarioKartVisionAgent(),
+            )
+            if args.agent == "mario-kart"
+            else None
+        )
         if args.headless:
-            port.advance(args.max_frames or 600)
+            for _ in range(args.max_frames or 600):
+                inputs: dict[int, object] = {}
+                if autonomous is not None:
+                    decision = autonomous.update(latch.require(), linked.frame)
+                    inputs[autonomous.player] = decision.buttons
+                if linked.step(inputs, 1).emulation_ended:
+                    break
             _save_screenshot(latch, args.screenshot)
             print(
                 f"linked session: {args.players} players, {port.frames_run} frames, "
                 f"controller ports polled={sorted(port.queried_ports)}"
             )
+            if autonomous is not None:
+                print(
+                    f"agent: P{autonomous.player + 1} {autonomous.agent.name}, "
+                    f"decisions={autonomous.decisions}, "
+                    f"scene={autonomous.last_decision.scene}, "
+                    f"buttons={'+'.join(
+                        button.value for button in canon_sort(
+                            autonomous.last_decision.buttons
+                        )
+                    ) or 'none'}"
+                )
             return 0
 
         pygame.init()
         frame = latch.require()
         native_size = (frame.width, frame.height)
         game_size = (frame.width * args.scale, frame.height * args.scale)
-        panel_height = 62
+        panel_height = 88
         screen = pygame.display.set_mode((game_size[0], game_size[1] + panel_height))
         pygame.display.set_caption(
             f"gbharness multiplayer — {args.players} linked players — {args.rom.name}"
@@ -115,9 +171,13 @@ def main(argv: list[str] | None = None) -> int:
         font = pygame.font.Font(None, 21)
         clock = pygame.time.Clock()
         keymaps = (P1_KEYS, P2_KEYS)
-        held_keys: dict[int, tuple[int, Button]] = {}
+        # key -> (player, button, earliest release frame, requested release frame)
+        # Keeping a tap alive for two emulated frames fixes fast keydown+keyup pairs that
+        # otherwise arrive in the same Pygame event batch and never reach the cartridge.
+        held_keys: dict[int, tuple[int, Button, int, int | None]] = {}
         running = True
         displayed = 0
+        agent_decision = PlayerDecision(frozenset(), "disabled")
         try:
             while running:
                 for event in pygame.event.get():
@@ -127,19 +187,49 @@ def main(argv: list[str] | None = None) -> int:
                         running = False
                     elif event.type == pygame.KEYDOWN:
                         for player, keymap in enumerate(keymaps[: args.players]):
+                            if autonomous is not None and player == autonomous.player:
+                                continue
                             button = keymap.get(event.key)
                             if button is not None and event.key not in held_keys:
-                                held_keys[event.key] = (player, button)
-                                port.press_for(player, button)
+                                held_keys[event.key] = (
+                                    player,
+                                    button,
+                                    displayed + 2,
+                                    None,
+                                )
                     elif event.type == pygame.KEYUP and event.key in held_keys:
-                        player, button = held_keys.pop(event.key)
-                        port.release_for(player, button)
+                        player, button, earliest, _ = held_keys[event.key]
+                        held_keys[event.key] = (
+                            player,
+                            button,
+                            earliest,
+                            max(displayed, earliest),
+                        )
                     elif event.type == pygame.WINDOWFOCUSLOST:
-                        for player, button in held_keys.values():
-                            port.release_for(player, button)
                         held_keys.clear()
 
-                if not running or not port.advance(1):
+                expired = [
+                    key
+                    for key, (_, _, _, release_at) in held_keys.items()
+                    if release_at is not None and displayed >= release_at
+                ]
+                for key in expired:
+                    held_keys.pop(key)
+
+                inputs: dict[int, object] = {
+                    player: tuple(
+                        button
+                        for held_player, button, _, _ in held_keys.values()
+                        if held_player == player
+                    )
+                    for player in range(min(args.players, len(keymaps)))
+                    if autonomous is None or player != autonomous.player
+                }
+                if autonomous is not None:
+                    agent_decision = autonomous.update(latch.require(), linked.frame)
+                    inputs[autonomous.player] = agent_decision.buttons
+
+                if not running or linked.step(inputs, 1).emulation_ended:
                     break
                 frame = latch.require()
                 if (frame.width, frame.height) != native_size:
@@ -150,17 +240,39 @@ def main(argv: list[str] | None = None) -> int:
                 screen.fill((13, 15, 22))
                 screen.blit(scaled, (0, 0))
                 p1 = font.render(
-                    "P1  arrows · N=A · M=B · K/L=shoulders · Enter=Start",
+                    "P1 YOU  arrows · hold N=accelerate · M=brake · Enter=Start",
                     True,
                     (255, 112, 112),
                 )
+                held_p1 = "+".join(
+                    button.value.upper() for button in canon_sort(port.pressed_for(0))
+                )
+                input_status = font.render(
+                    f"P1 INPUT  {held_p1 or 'none'}",
+                    True,
+                    (255, 190, 190),
+                )
+                if autonomous is not None:
+                    agent_buttons = "+".join(
+                        button.value.upper()
+                        for button in canon_sort(agent_decision.buttons)
+                    )
+                    p2_label = (
+                        f"P{autonomous.player + 1} AGENT  {agent_decision.scene} · "
+                        f"{agent_buttons or 'none'}"
+                    )
+                else:
+                    p2_label = (
+                        "P2 HUMAN  WASD · hold F=accelerate · G=brake · Space=Start"
+                    )
                 p2 = font.render(
-                    "P2  WASD · F=A · G=B · Q/E=shoulders · Space=Start",
+                    p2_label,
                     True,
                     (112, 174, 255),
                 )
                 screen.blit(p1, (12, game_size[1] + 8))
-                screen.blit(p2, (12, game_size[1] + 34))
+                screen.blit(input_status, (12, game_size[1] + 34))
+                screen.blit(p2, (12, game_size[1] + 60))
                 pygame.display.flip()
                 displayed += 1
                 if args.max_frames is not None and displayed >= args.max_frames:

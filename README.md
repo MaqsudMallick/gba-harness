@@ -167,6 +167,23 @@ WASD, F/G for A/B, Q/E for the shoulders, and Space for Start. The backend itsel
 four controllers; the initial keyboard frontend maps two because the next milestone is to
 assign P3/P4 to gamepads or autonomous policies.
 
+To race against the local visual driver, let the launcher choose the default racers and
+Mushroom Cup, then assign Player 2 to the Mario Kart adapter:
+
+```bash
+uv run python examples/multiplayer_rom.py \
+  --rom "roms/Mario Kart - Super Circuit (USA).gba" \
+  --players 2 --quick-race --agent mario-kart --agent-player 2
+```
+
+Player 1 is **you**: hold `N` to accelerate and use the arrow keys to steer. Player 2 is
+the agent; its keyboard mapping is disabled while autonomous control is active. The status
+panel shows the exact P1 input reaching the cartridge and the agent's current scene and
+buttons. The Mario Kart adapter reads only P2's 240x160 view, estimates near/far road
+geometry and grass coverage, modulates throttle through turns, and uses bounded recovery
+sweeps when it leaves the track. `AutonomousPlayer` owns cropping and decision cadence, so
+another game can provide a `VisualPlayerAgent` without changing the emulator or frontend.
+
 For a fast evidence capture without a window:
 
 ```bash

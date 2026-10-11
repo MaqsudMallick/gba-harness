@@ -10,7 +10,10 @@ in this file.
 - [x] Apply multiple agents' inputs atomically on a shared emulated clock.
 - [x] Split the composite framebuffer into native per-player visual observations.
 - [x] Verify Mario Kart: Super Circuit reaches a genuine `2P` linked lobby.
-- [ ] Add visual steering/throttle policies and finish one verified two-agent VS race.
+- [x] Add a modular Player 2 visual steering/throttle agent, automatic quick-race setup,
+      live agent/input status, and off-road/reverse recovery for Mario Kart.
+- [ ] Tune and record one complete verified Mario Kart race finish; the current local
+      controller drives and rejoins the road but is not yet reliable for all three laps.
 - [ ] Add match telemetry: per-player decisions, recovery, lap/progress, finish order, and
       a Neatlogs trace that makes the competition inspectable.
 - [ ] Add gamepad bindings for human P3/P4; the backend already exposes four controller
