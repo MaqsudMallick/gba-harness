@@ -178,11 +178,11 @@ def four_swords_visual_target_plan(
     if stage != "probe_target" or len(views) < 2:
         return {}
     rgb = to_rgb(views[1])
+    player = _link_position(rgb, 1) or (120, 88)
     grid = _forward_target_grid(rgb)
     if grid is None:
-        return {1: ("move_up",)}
+        return {1: _forward_exploration_step(rgb, player)}
 
-    player = _link_position(rgb, 1) or (120, 88)
     target = grid[3]
     if any(
         _squared_distance(player, active) <= 12 * 12
@@ -240,7 +240,7 @@ class FourSwordsVisualTargetNavigator:
             active_targets = _active_target_centres(rgb)
             grid = _forward_target_grid(rgb)
             if grid is None:
-                plans[player] = ("move_up",)
+                plans[player] = _forward_exploration_step(rgb, position)
                 continue
             target = grid[self.assignments[player]]
             active_now = any(
@@ -290,7 +290,7 @@ class FourSwordsVisualTargetNavigator:
         position = _link_position(rgb, 1) or (120, 88)
         grid = _forward_target_grid(rgb)
         if grid is None:
-            return {1: ("move_up",)}
+            return {1: _forward_exploration_step(rgb, position)}
 
         target = grid[3]
         if any(
@@ -542,6 +542,87 @@ def _forward_target_grid(rgb: np.ndarray) -> tuple[tuple[int, int], ...] | None:
     )
     grids = _target_grids(targets)
     return grids[0] if grids else None
+
+
+def _forward_exploration_step(
+    rgb: np.ndarray,
+    position: tuple[int, int],
+) -> tuple[str, ...]:
+    opening = _visible_wall_opening(rgb, position)
+    if opening is None:
+        return ("move_up",)
+    dx = opening[0] - position[0]
+    if abs(dx) <= 7:
+        return ("move_up",)
+    return _precision_route_step(position, (opening[0], position[1]))
+
+
+def _visible_wall_opening(
+    rgb: np.ndarray,
+    position: tuple[int, int],
+) -> tuple[int, int] | None:
+    """Find a visible floor gap between two horizontal wall segments."""
+    red = rgb[:, :, 0].astype(np.int16)
+    green = rgb[:, :, 1].astype(np.int16)
+    blue = rgb[:, :, 2].astype(np.int16)
+    wall = (
+        (red > 80)
+        & (green > 35)
+        & (green < 235)
+        & (blue > 20)
+        & (blue < 190)
+        & (red > green + 18)
+        & (red > blue + 15)
+    )
+    candidates: list[tuple[int, int, int]] = []
+    max_y = min(position[1] - 8, 104)
+    for centre_y in range(28, max_y + 1):
+        density = wall[max(0, centre_y - 8) : centre_y + 9].mean(axis=0)
+        runs = _closed_runs(density >= 0.28, close_gap=15, min_length=30)
+        for left, right in zip(runs, runs[1:], strict=False):
+            gap_start = left[1] + 1
+            gap_end = right[0] - 1
+            gap_width = gap_end - gap_start + 1
+            if not 24 <= gap_width <= 72:
+                continue
+            wall_width = left[1] - left[0] + right[1] - right[0] + 2
+            candidates.append(((gap_start + gap_end) // 2, centre_y, wall_width))
+    if not candidates:
+        return None
+    opening_x, opening_y, _ = max(
+        candidates,
+        key=lambda candidate: (
+            -abs(candidate[0] - position[0]),
+            candidate[2],
+            candidate[1],
+        ),
+    )
+    return opening_x, opening_y
+
+
+def _closed_runs(
+    mask: np.ndarray,
+    *,
+    close_gap: int,
+    min_length: int,
+) -> tuple[tuple[int, int], ...]:
+    runs: list[list[int]] = []
+    start: int | None = None
+    for index, value in enumerate(mask):
+        if bool(value) and start is None:
+            start = index
+        if start is not None and (not bool(value) or index == len(mask) - 1):
+            end = index if bool(value) and index == len(mask) - 1 else index - 1
+            if runs and start - runs[-1][1] - 1 <= close_gap:
+                runs[-1][1] = end
+            else:
+                runs.append([start, end])
+            start = None
+    return tuple(
+        (start_x, end_x)
+        for start_x, end_x in runs
+        if end_x - start_x + 1 >= min_length
+    )
 
 
 def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:

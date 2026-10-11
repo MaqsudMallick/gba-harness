@@ -9,6 +9,7 @@ from gbharness.agent.zelda import (
     _link_position,
     _order_target_grid,
     _target_grids,
+    _visible_wall_opening,
     bootstrap_four_swords,
     first_training_reward_visible,
     four_swords_dialogue_visible,
@@ -299,6 +300,17 @@ def test_target_grid_rejects_two_rows_from_different_warp_groups() -> None:
     forward_row = ((80, 30), (128, 31))
 
     assert _target_grids((*return_row, *forward_row)) == ()
+
+
+def test_wall_opening_detector_finds_an_off_centre_gap() -> None:
+    rgb = np.full((160, 240, 3), (181, 211, 173), dtype=np.uint8)
+    rgb[55:76, :145] = (173, 121, 115)
+    rgb[55:76, 193:] = (173, 121, 115)
+
+    opening = _visible_wall_opening(rgb, (120, 88))
+
+    assert opening is not None
+    assert 165 <= opening[0] <= 173
 
 
 def test_link_position_does_not_include_a_nearby_target_ring() -> None:
