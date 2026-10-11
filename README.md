@@ -17,6 +17,7 @@ emulator:
 | **Game policy** | goal, allowed macros, and descriptions | Mario starter policy built |
 | **Decision provider** | screenshot + state + action set → one decision | Vertex AI built; provider protocol is portable |
 | **Runner** | observe → decide → act → recover → verify | built |
+| **Multiplayer** | 2-4 linked consoles, synchronized agents, split observations | built |
 
 Dependencies mirror that split: the input layer imports with nothing but the standard
 library, and `vision` and `agent` are optional extras.
@@ -46,6 +47,14 @@ rather than installed by `uv sync`. Any of these work, and discovery finds all t
 
 `fetch-core.sh` supports Apple Silicon, Intel macOS, and Debian/Ubuntu Linux. On macOS it
 downloads the official Libretro nightly core; on Linux it extracts the distribution package.
+
+Linked multiplayer uses the separate
+[mGBA Splitscreen](https://docs.libretro.com/library/mgba_splitscreen/) core. Build its
+pinned open-source revision locally (CMake is required) with:
+
+```bash
+./scripts/fetch-multiplayer-core.sh
+```
 
 Integration tests skip cleanly if no core is found; `examples/demo.py` prints the three
 options and exits.
@@ -135,6 +144,38 @@ uv run python examples/live_rom.py
 Controls: arrow keys for the D-pad, `Z`/`X` for A/B, `A`/`S` for L/R, Enter for Start,
 Right Shift for Select, and Escape to quit.
 
+## Linked multiplayer
+
+`LibretroMultiplayerPort` runs two to four GBA instances inside one core and connects them
+through mGBA's lockstep link-cable driver. Controller ports are independent, while
+`LinkedSession.step()` applies every agent's inputs before advancing the one shared clock.
+The composite framebuffer can be converted back into native 240x160 observations with
+`split_player_frames()`, so each agent sees only its own console.
+
+The supplied Mario Kart launcher can boot directly into the game's confirmed `2P` linked
+lobby. Use only a cartridge image you own; ROMs remain in the gitignored `roms/` directory.
+
+```bash
+./scripts/fetch-multiplayer-core.sh
+uv run python examples/multiplayer_rom.py \
+  --rom "roms/Mario Kart - Super Circuit (USA).gba" \
+  --players 2 --mario-kart-lobby
+```
+
+P1 uses arrows, N/M for A/B, K/L for the shoulders, and Enter for Start. P2 uses
+WASD, F/G for A/B, Q/E for the shoulders, and Space for Start. The backend itself supports
+four controllers; the initial keyboard frontend maps two because the next milestone is to
+assign P3/P4 to gamepads or autonomous policies.
+
+For a fast evidence capture without a window:
+
+```bash
+uv run python examples/multiplayer_rom.py \
+  --rom "roms/Mario Kart - Super Circuit (USA).gba" \
+  --players 2 --mario-kart-lobby --headless --max-frames 1 \
+  --screenshot artifacts/mario-kart-linked-lobby.png
+```
+
 ## Autonomous agent
 
 The default Mario controller is a local closed-loop visual skill. It reads emulator frames,
@@ -175,7 +216,7 @@ ROMs, API keys, private traces, and account information are never committed.
 ## Checks
 
 ```bash
-uv run pytest        # 309 tests
+uv run pytest
 uv run ruff check src/ tests/ examples/
 uv run mypy
 ```

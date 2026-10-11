@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import ctypes
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Final
 
@@ -51,7 +51,15 @@ RETRO_API_VERSION: Final = 1
 ENV_GET_CAN_DUPE: Final = 3
 ENV_GET_SYSTEM_DIRECTORY: Final = 9
 ENV_SET_PIXEL_FORMAT: Final = 10
+ENV_SET_INPUT_DESCRIPTORS: Final = 11
+ENV_GET_VARIABLE: Final = 15
+ENV_SET_VARIABLES: Final = 16
+ENV_GET_VARIABLE_UPDATE: Final = 17
 ENV_GET_SAVE_DIRECTORY: Final = 31
+ENV_SET_SYSTEM_AV_INFO: Final = 32
+ENV_SET_SUBSYSTEM_INFO: Final = 34
+ENV_SET_GEOMETRY: Final = 37
+ENV_SET_CORE_OPTIONS_DISPLAY: Final = 55
 
 RETRO_DEVICE_JOYPAD: Final = 1
 RETRO_MEMORY_SAVE_RAM: Final = 0
@@ -79,6 +87,12 @@ _CORE_NAMES: Final = (
     "mgba_libretro.so",
     "mgba_libretro.dylib",
     "mgba_libretro.dll",
+)
+
+_MULTIPLAYER_CORE_NAMES: Final = (
+    "mgba_splitscreen_libretro.so",
+    "mgba_splitscreen_libretro.dylib",
+    "mgba_splitscreen_libretro.dll",
 )
 
 #: Where `scripts/fetch-core.sh` puts the core, relative to the project root.
@@ -116,6 +130,9 @@ _AUDIO_BATCH_T = ctypes.CFUNCTYPE(ctypes.c_size_t, ctypes.POINTER(ctypes.c_int16
 _POLL_T = ctypes.CFUNCTYPE(None)
 _STATE_T = ctypes.CFUNCTYPE(
     ctypes.c_int16, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint
+)
+_MLOG_T = ctypes.CFUNCTYPE(
+    None, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p
 )
 
 
@@ -175,6 +192,14 @@ class _GameInfo(ctypes.Structure):
     ]
 
 
+class _Variable(ctypes.Structure):
+    _fields_ = [("key", ctypes.c_char_p), ("value", ctypes.c_char_p)]
+
+
+class _MLogger(ctypes.Structure):
+    _fields_ = [("log", _MLOG_T), ("filter", ctypes.c_void_p)]
+
+
 def find_core(explicit: str | Path | None = None) -> Path:
     """Locate the platform's mGBA libretro core.
 
@@ -209,6 +234,25 @@ def find_core(explicit: str | Path | None = None) -> Path:
     )
 
 
+def find_multiplayer_core(explicit: str | Path | None = None) -> Path:
+    """Locate the linked 2-4 player mGBA Splitscreen libretro core."""
+    candidates: list[Path] = []
+    if explicit is not None:
+        candidates.append(Path(explicit))
+    env = os.environ.get("GBHARNESS_MULTIPLAYER_CORE")
+    if env:
+        candidates.append(Path(env))
+    search_dirs = [*_vendor_dirs(), *(Path(d) for d in _SYSTEM_CORE_DIRS)]
+    candidates.extend(d / name for d in search_dirs for name in _MULTIPLAYER_CORE_NAMES)
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise CoreNotFound(
+        "could not find the mGBA Splitscreen libretro core. Build it with "
+        "scripts/fetch-multiplayer-core.sh, or set GBHARNESS_MULTIPLAYER_CORE"
+    )
+
+
 class LibretroInputPort:
     """Drive a Game Boy Advance through the mGBA libretro core.
 
@@ -226,21 +270,30 @@ class LibretroInputPort:
         core: str | Path | None = None,
         system_dir: str | Path | None = None,
         frame_sink: FrameSink | None = None,
+        players: int = 1,
+        core_options: Mapping[str, str] | None = None,
     ) -> None:
         if LibretroInputPort._instance is not None:
             raise RuntimeError(
                 "a LibretroInputPort is already open in this process; libretro cores keep "
                 "state in globals, so only one may exist at a time. Close the other first."
             )
+        if not 1 <= players <= 4:
+            raise ValueError(f"players must be in [1, 4], got {players}")
         self._core_path = find_core(core)
         self._frame_sink = frame_sink
         self._lib = ctypes.CDLL(str(self._core_path))
-        self._held: set[Button] = set()
+        self._players = players
+        self._held_by_player: list[set[Button]] = [set() for _ in range(players)]
+        self._option_values = {
+            key: value.encode() for key, value in (core_options or {}).items()
+        }
         self._closed = False
         self._loaded = False
         self.frames_run = 0
         self.polls = 0
         self.queried_ids: set[int] = set()
+        self.queried_ports: set[int] = set()
 
         self._system_dir = ctypes.c_char_p(str(system_dir or Path.cwd()).encode())
         self._declare()
@@ -300,7 +353,26 @@ class LibretroInputPort:
             if cmd in (ENV_GET_SYSTEM_DIRECTORY, ENV_GET_SAVE_DIRECTORY):
                 ctypes.cast(data, ctypes.POINTER(ctypes.c_char_p))[0] = self._system_dir
                 return True
-            return False  # unhandled: the core falls back to its defaults
+            if cmd == ENV_GET_VARIABLE:
+                variable = ctypes.cast(data, ctypes.POINTER(_Variable))[0]
+                if variable.key is None:
+                    return False
+                value = self._option_values.get(variable.key.decode())
+                if value is None:
+                    return False
+                variable.value = value
+                return True
+            if cmd == ENV_GET_VARIABLE_UPDATE:
+                ctypes.cast(data, ctypes.POINTER(ctypes.c_bool))[0] = False
+                return True
+            return cmd in (
+                ENV_SET_INPUT_DESCRIPTORS,
+                ENV_SET_VARIABLES,
+                ENV_SET_SYSTEM_AV_INFO,
+                ENV_SET_SUBSYSTEM_INFO,
+                ENV_SET_GEOMETRY,
+                ENV_SET_CORE_OPTIONS_DISPLAY,
+            )  # unhandled commands fall back to core defaults
 
         @_VIDEO_T
         def video(data: int | None, width: int, height: int, pitch: int) -> None:
@@ -324,11 +396,12 @@ class LibretroInputPort:
 
         @_STATE_T
         def input_state(port: int, device: int, index: int, id_: int) -> int:
-            if device != RETRO_DEVICE_JOYPAD or port != 0:
+            if device != RETRO_DEVICE_JOYPAD or port >= self._players:
                 return 0
             self.queried_ids.add(id_)
+            self.queried_ports.add(port)
             button = _BUTTON_BY_ID.get(id_)
-            return 1 if button is not None and button in self._held else 0
+            return 1 if button is not None and button in self._held_by_player[port] else 0
 
         self._callbacks = (environment, video, audio, audio_batch, input_poll, input_state)
         self._lib.retro_set_environment(environment)
@@ -359,12 +432,10 @@ class LibretroInputPort:
     # --- InputPort ------------------------------------------------------------------
 
     def press(self, button: Button) -> None:
-        self._check_open()
-        self._held.add(button)
+        self.press_for(0, button)
 
     def release(self, button: Button) -> None:
-        self._check_open()
-        self._held.discard(button)
+        self.release_for(0, button)
 
     def advance(self, frames: int) -> bool:
         """Run `frames` frames. Each `retro_run()` is exactly one frame.
@@ -381,7 +452,29 @@ class LibretroInputPort:
         return True
 
     def pressed(self) -> frozenset[Button]:
-        return frozenset(self._held)
+        return self.pressed_for(0)
+
+    @property
+    def players(self) -> int:
+        """Number of independently addressable controller ports."""
+        return self._players
+
+    def press_for(self, player: int, button: Button) -> None:
+        """Hold ``button`` for one zero-based player without advancing time."""
+        self._check_open()
+        self._check_player(player)
+        self._held_by_player[player].add(button)
+
+    def release_for(self, player: int, button: Button) -> None:
+        """Release ``button`` for one zero-based player without advancing time."""
+        self._check_open()
+        self._check_player(player)
+        self._held_by_player[player].discard(button)
+
+    def pressed_for(self, player: int) -> frozenset[Button]:
+        """Return the held buttons for one zero-based player."""
+        self._check_player(player)
+        return frozenset(self._held_by_player[player])
 
     # --- Snapshotting ---------------------------------------------------------------
 
@@ -408,14 +501,16 @@ class LibretroInputPort:
     def release_all(self) -> None:
         """Let every held button up. Safe on a closed port."""
         if not self._closed:
-            self._held.clear()
+            for held in self._held_by_player:
+                held.clear()
 
     def close(self) -> None:
         """Release buttons, unload the ROM and deinit the core. Idempotent."""
         if self._closed:
             return
         global _initialized
-        self._held.clear()
+        for held in self._held_by_player:
+            held.clear()
         self._closed = True
         try:
             if self._loaded:
@@ -431,8 +526,85 @@ class LibretroInputPort:
         if self._closed:
             raise EmulationEnded("port is closed; the core has been deinitialized")
 
+    def _check_player(self, player: int) -> None:
+        if not isinstance(player, int) or isinstance(player, bool):
+            raise TypeError(f"player must be an int, got {type(player).__name__}")
+        if not 0 <= player < self._players:
+            raise IndexError(
+                f"player index {player} is outside [0, {self._players - 1}]"
+            )
+
     def __enter__(self) -> LibretroInputPort:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+class LibretroMultiplayerPort(LibretroInputPort):
+    """A linked 2-4 player mGBA session exposed through independent controllers.
+
+    The mGBA Splitscreen core owns all emulator instances and their virtual link cable.
+    This class only routes each controller to libretro ports 0-3 and exposes the composite
+    framebuffer through the normal frame sink.
+    """
+
+    def __init__(
+        self,
+        rom: str | Path | bytes,
+        *,
+        players: int = 2,
+        core: str | Path | None = None,
+        system_dir: str | Path | None = None,
+        frame_sink: FrameSink | None = None,
+        layout: str = "auto",
+    ) -> None:
+        if not 2 <= players <= 4:
+            raise ValueError(f"multiplayer sessions need 2-4 players, got {players}")
+        if layout not in {"auto", "2x1", "1x2", "2x2", "speaker", "focus", "overlay"}:
+            raise ValueError(f"unsupported multiplayer layout: {layout!r}")
+        super().__init__(
+            rom,
+            core=find_multiplayer_core(core),
+            system_dir=system_dir,
+            frame_sink=frame_sink,
+            players=players,
+            core_options={
+                "splitscreen_players": str(players),
+                "splitscreen_layout": layout,
+                "splitscreen_audio": "mixed",
+                "splitscreen_overlays": "on",
+            },
+        )
+        self._silence_verbose_core_logs()
+
+    def _silence_verbose_core_logs(self) -> None:
+        """Install a no-op mGBA logger; the development core is otherwise extremely loud."""
+
+        @_MLOG_T
+        def discard(
+            logger: object,
+            category: int,
+            level: int,
+            message: bytes,
+            args: object,
+        ) -> None:
+            pass
+
+        self._quiet_log_callback = discard
+        self._quiet_logger = _MLogger(discard, None)
+        self._lib.mLogSetDefaultLogger.argtypes = [ctypes.POINTER(_MLogger)]
+        self._lib.mLogSetDefaultLogger(ctypes.byref(self._quiet_logger))
+
+    def start_linked_session(self) -> None:
+        """Confirm the core's player-count menu and boot all linked consoles."""
+        self.advance(2)
+        self.press_for(0, Button.A)
+        self.advance(2)
+        self.release_for(0, Button.A)
+        self.advance(2)
+
+    def close(self) -> None:
+        super().close()
+        if hasattr(self, "_quiet_logger"):
+            self._lib.mLogSetDefaultLogger(None)

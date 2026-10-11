@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from gbharness.backends.libretro_port import CoreNotFound, find_core
+from gbharness.backends.libretro_port import CoreNotFound, find_core, find_multiplayer_core
 
 ROM_SIZE = 32 * 1024
 
@@ -76,6 +76,15 @@ def libretro_core() -> pathlib.Path:
     """
     try:
         return find_core()
+    except CoreNotFound as exc:
+        pytest.skip(str(exc))
+
+
+@pytest.fixture(scope="session")
+def multiplayer_core() -> pathlib.Path:
+    """Path to the linked mGBA Splitscreen core, or skip when not built."""
+    try:
+        return find_multiplayer_core()
     except CoreNotFound as exc:
         pytest.skip(str(exc))
 

@@ -102,6 +102,16 @@ portable across games and multiplayer formats.
   `artifacts/agent-level-clear.png` (the artifacts directory remains uncommitted).
 - Completed: the Entire GitHub mirror is ready at `/gh/MaqsudMallick/gba-harness`, and the
   recorded checkpoint remains `01M4K4DYFVKB5TF5R77KZMJD5J` at commit `c47ae93...`.
+- Completed: created `feat/mario-kart-multiplayer` from the updated remote `main` and added
+  real 2-4 player link-cable support using the open-source mGBA Splitscreen libretro core.
+  The harness now routes independent controller ports, applies multi-agent actions on one
+  shared clock, and extracts a native 240x160 observation for each player.
+- Completed real-ROM verification with the locally supplied Mario Kart: Super Circuit
+  cartridge: both linked screens reached the game's shared Mario GP / VS / Battle menu and
+  displayed `2P`. Evidence is captured locally at
+  `artifacts/mario-kart-linked-lobby.png`; neither the ROM nor artifacts are committed.
+- Completed multiplayer verification: all 322 tests pass, Ruff is clean, strict mypy is
+  clean across 27 source files, and the real core reports controller ports 0 and 1 polled.
 
 ## Demo
 
@@ -111,6 +121,7 @@ Current runnable demo and smoke tests:
 uv run python examples/run_rom.py --rom roms/game.gba --screenshot artifacts/boot.png
 uv run python examples/live_rom.py
 uv run python examples/agent_rom.py --controller local --max-turns 150
+uv run python examples/multiplayer_rom.py --rom roms/game.gba --players 2
 ```
 
 ROMs and credentials are local-only and must not be committed or shared.
@@ -122,7 +133,8 @@ ROMs and credentials are local-only and must not be committed or shared.
 - The reusable game-policy boundary exists, but only the Mario starter policy is implemented.
 - The representative completed application trace has been recorded; a sanitized dashboard
   link or screenshot still has to be prepared for the public submission.
-- Agent-vs-human and agent-vs-agent match orchestration are planned, not implemented.
+- Linked agent-vs-human and agent-vs-agent stepping is implemented. A racing policy that
+  completes and verifies a full Mario Kart race is the next game-specific milestone.
 - Ranked matches need a policy for save states; emulator rollback should normally be
   disabled because it gives agents an unfair advantage.
 

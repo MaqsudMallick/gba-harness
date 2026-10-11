@@ -4,6 +4,18 @@ This checklist contains only work that still requires an account owner, browser 
 submission asset. Code, secrets, private account data, and payment information do not belong
 in this file.
 
+## Product milestones
+
+- [x] Run 2-4 GBA instances in one linked mGBA core with independent controllers.
+- [x] Apply multiple agents' inputs atomically on a shared emulated clock.
+- [x] Split the composite framebuffer into native per-player visual observations.
+- [x] Verify Mario Kart: Super Circuit reaches a genuine `2P` linked lobby.
+- [ ] Add visual steering/throttle policies and finish one verified two-agent VS race.
+- [ ] Add match telemetry: per-player decisions, recovery, lap/progress, finish order, and
+      a Neatlogs trace that makes the competition inspectable.
+- [ ] Add gamepad bindings for human P3/P4; the backend already exposes four controller
+      ports, while the current keyboard demo maps P1 and P2.
+
 ## Entire checkpoint
 
 - [x] Refreshed the Entire login and connected the repository.
