@@ -140,12 +140,24 @@ def four_swords_gameplay_visible(frame: RawFrame, players: int) -> bool:
 def four_swords_dialogue_visible(frame: RawFrame) -> bool:
     """Detect a large black dialogue box in any player screen."""
     for frame_view in split_player_frames(frame, 4):
-        view = to_rgb(frame_view)
-        region = view[92:148, 4:236]
-        dark = np.max(region, axis=2) < 45
-        if float(np.count_nonzero(dark)) / float(dark.size) >= 0.45:
+        if _private_dialogue_visible(to_rgb(frame_view)):
             return True
     return False
+
+
+def four_swords_npc_adjacent(views: tuple[RawFrame, ...]) -> bool:
+    """Detect the pink NPC next to the P2 screen centre from visible pixels."""
+    if len(views) < 2:
+        return False
+    rgb = to_rgb(views[1])
+    nearby = rgb[50:91, 90:151]
+    pink = (
+        (nearby[:, :, 0] > 140)
+        & (nearby[:, :, 2] > 100)
+        & (nearby[:, :, 0] > nearby[:, :, 1] * 1.25)
+        & (nearby[:, :, 2] > nearby[:, :, 1] * 1.10)
+    )
+    return int(np.count_nonzero(pink)) >= 20
 
 
 def four_swords_visual_target_plan(
@@ -186,6 +198,7 @@ class FourSwordsVisualTargetNavigator:
     near_players: set[int] = field(default_factory=set)
     probe_near_target: bool = False
     probe_reached: bool = False
+    dialogue_attempts: int = 0
 
     def __call__(
         self,
@@ -194,6 +207,8 @@ class FourSwordsVisualTargetNavigator:
     ) -> dict[int, tuple[str, ...]]:
         if stage == "probe_target":
             return self._probe_plan(views)
+        if stage == "advance_dialogue":
+            return self._dialogue_plan(views)
         if stage != "reach_warps" or len(views) < 4:
             return {}
 
@@ -261,6 +276,32 @@ class FourSwordsVisualTargetNavigator:
             return {1: ("wait",)}
         return {1: _single_route_step(anchor, target)}
 
+    def _dialogue_plan(
+        self,
+        views: tuple[RawFrame, ...],
+    ) -> dict[int, tuple[str, ...]]:
+        if len(views) < 2:
+            return {}
+        rgb = to_rgb(views[1])
+        if _private_dialogue_visible(rgb):
+            self.dialogue_attempts = 0
+            return {1: ("interact", "wait", "wait", "interact", "wait", "wait")}
+
+        self.dialogue_attempts += 1
+        if self.dialogue_attempts >= 3:
+            self.dialogue_attempts = 0
+            return {1: ("move_down", "face_up", "interact", "wait", "wait")}
+
+        offset = _pink_npc_offset(rgb)
+        if offset is None:
+            return {1: ("face_up", "interact", "wait", "wait")}
+        dx, dy = offset
+        if abs(dx) > abs(dy):
+            facing = "face_right" if dx > 0 else "face_left"
+        else:
+            facing = "face_down" if dy > 0 else "face_up"
+        return {1: (facing, "interact", "wait", "wait")}
+
     def probe_target_reached(self, views: tuple[RawFrame, ...]) -> bool:
         """Confirm that P2 covered its selected floor target."""
         self._probe_plan(views)
@@ -276,6 +317,30 @@ class FourSwordsVisualTargetNavigator:
 
 def _squared_distance(first: tuple[int, int], second: tuple[int, int]) -> int:
     return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2
+
+
+def _private_dialogue_visible(rgb: np.ndarray) -> bool:
+    region = rgb[92:148, 4:236]
+    dark = np.max(region, axis=2) < 45
+    return float(np.count_nonzero(dark)) / float(dark.size) >= 0.45
+
+
+def _pink_npc_offset(rgb: np.ndarray) -> tuple[int, int] | None:
+    region_x = 80
+    region_y = 42
+    nearby = rgb[region_y:96, region_x:161]
+    pink = (
+        (nearby[:, :, 0] > 140)
+        & (nearby[:, :, 2] > 100)
+        & (nearby[:, :, 0] > nearby[:, :, 1] * 1.25)
+        & (nearby[:, :, 2] > nearby[:, :, 1] * 1.10)
+    )
+    ys, xs = np.nonzero(pink)
+    if len(xs) < 20:
+        return None
+    npc_x = int(np.median(xs)) + region_x
+    npc_y = int(np.median(ys)) + region_y
+    return npc_x - 120, npc_y - 88
 
 
 def _route_step(

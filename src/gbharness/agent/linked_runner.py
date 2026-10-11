@@ -115,6 +115,7 @@ class LinkedAgentRunner:
     on_turn: Callable[[LinkedTurnRecord], None] | None = None
     on_team_plan: Callable[[str], None] | None = None
     dialogue_detector: Callable[[RawFrame], bool] | None = None
+    npc_reached_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
     visual_plan_override: (
         Callable[[str, tuple[RawFrame, ...]], dict[int, tuple[str, ...]]] | None
     ) = None
@@ -209,6 +210,15 @@ class LinkedAgentRunner:
                 )
                 self._dialogue_seen = self._dialogue_seen or dialogue_before
                 views = split_player_frames(composite, len(self.assignments))
+                if (
+                    self._team_stage == "reach_npc"
+                    and self.npc_reached_detector is not None
+                    and self.npc_reached_detector(views)
+                ):
+                    self._team_stage = "advance_dialogue"
+                    self.telemetry.log(
+                        "Visual NPC adjacency advanced the team to advance_dialogue"
+                    )
                 if (
                     self._team_stage == "probe_target"
                     and self.probe_target_detector is not None

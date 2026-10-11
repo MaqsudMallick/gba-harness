@@ -31,6 +31,7 @@ from gbharness.agent import (
     VertexTeamDecisionProvider,
     bootstrap_four_swords,
     four_swords_dialogue_visible,
+    four_swords_npc_adjacent,
     solve_first_training_puzzle,
 )
 from gbharness.backends import LibretroMultiplayerPort, find_multiplayer_core, validate_rom
@@ -266,6 +267,9 @@ def main(argv: list[str] | None = None) -> int:
                     on_turn=_print_turn if args.log_turns else None,
                     dialogue_detector=(
                         four_swords_dialogue_visible if args.npc_autopilot else None
+                    ),
+                    npc_reached_detector=(
+                        four_swords_npc_adjacent if args.npc_autopilot else None
                     ),
                     visual_plan_override=target_navigator,
                     probe_target_detector=(

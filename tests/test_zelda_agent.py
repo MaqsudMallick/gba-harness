@@ -10,6 +10,7 @@ from gbharness.agent.zelda import (
     first_training_reward_visible,
     four_swords_dialogue_visible,
     four_swords_gameplay_visible,
+    four_swords_npc_adjacent,
     four_swords_probe_target_reached,
     four_swords_visual_target_plan,
 )
@@ -94,6 +95,30 @@ def test_four_swords_dialogue_detector_uses_any_player_text_box() -> None:
     # Put the dialogue box only in the P2 viewport.
     rgb[98:142, 250:470] = (8, 8, 8)
     assert four_swords_dialogue_visible(frame())
+
+
+def test_four_swords_npc_adjacent_uses_p2_visible_pixels() -> None:
+    rgb = np.full((320, 480, 3), (130, 180, 110), dtype=np.uint8)
+
+    def frame() -> RawFrame:
+        packed = (
+            ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (rgb[:, :, 2].astype(np.uint16) >> 3)
+        )
+        return RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=480,
+            height=320,
+            pitch=960,
+            index=0,
+        )
+
+    views = tuple(split_player_frames(frame(), 4))
+    assert not four_swords_npc_adjacent(views)
+    rgb[68:78, 354:364] = (222, 40, 165)
+    views = tuple(split_player_frames(frame(), 4))
+    assert four_swords_npc_adjacent(views)
 
 
 def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
@@ -218,6 +243,46 @@ def test_visual_target_navigator_keeps_p2_on_a_covered_probe_target() -> None:
     assert navigator("probe_target", views(((140, 88),))) == {1: ("move_right",)}
     assert navigator.probe_target_reached(views(((65, 88),)))
     assert navigator("probe_target", views(((65, 88),))) == {1: ("wait",)}
+
+
+def test_visual_target_navigator_faces_npc_and_recovers_from_failed_dialogue() -> None:
+    navigator = FourSwordsVisualTargetNavigator()
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    rgb[65:75, 115:125] = (222, 40, 165)
+
+    def frame(current: np.ndarray) -> RawFrame:
+        packed = (
+            ((current[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((current[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (current[:, :, 2].astype(np.uint16) >> 3)
+        )
+        return RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=240,
+            height=160,
+            pitch=480,
+            index=0,
+        )
+
+    views = (frame(rgb),) * 4
+    assert navigator("advance_dialogue", views)[1][0] == "face_up"
+    navigator("advance_dialogue", views)
+    assert navigator("advance_dialogue", views)[1][:3] == (
+        "move_down",
+        "face_up",
+        "interact",
+    )
+
+    dialogue = rgb.copy()
+    dialogue[92:148, 4:236] = (8, 8, 8)
+    assert navigator("advance_dialogue", (frame(dialogue),) * 4)[1] == (
+        "interact",
+        "wait",
+        "wait",
+        "interact",
+        "wait",
+        "wait",
+    )
 
 
 def test_bootstrap_is_deterministic_and_stops_at_visible_gameplay() -> None:

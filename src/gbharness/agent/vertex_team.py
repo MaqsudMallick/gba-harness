@@ -350,7 +350,8 @@ def _generate_with_retry(
     config: types.GenerateContentConfig,
 ) -> Any:
     """Retry a short transient Vertex failure without changing the team turn."""
-    for attempt in range(3):
+    retry_delays = (2.0, 5.0, 10.0, 20.0)
+    for attempt in range(len(retry_delays) + 1):
         try:
             return provider.client.models.generate_content(
                 model=provider.model,
@@ -361,9 +362,9 @@ def _generate_with_retry(
                 config=config,
             )
         except Exception:
-            if attempt == 2:
+            if attempt == len(retry_delays):
                 raise
-            time.sleep(0.5 * (attempt + 1))
+            time.sleep(retry_delays[attempt])
     raise RuntimeError("Vertex retry loop ended without a response")
 
 

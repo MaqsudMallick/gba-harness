@@ -32,6 +32,7 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     calls: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
     started_at = time.time()
     events_path = output / "events.jsonl"
     events_path.write_text("", encoding="utf-8")
@@ -56,6 +57,7 @@ def main() -> int:
             },
             "calls": calls,
             "executions": executions,
+            "errors": errors,
         }
         temporary = output / "trace.json.tmp"
         temporary.write_text(
@@ -70,7 +72,27 @@ def main() -> int:
     def capture_decide_team(self: VertexTeamDecisionProvider, request: Any) -> Any:
         call_number = len(calls) + 1
         started = time.perf_counter()
-        decision = original_decide_team(self, request)
+        try:
+            decision = original_decide_team(self, request)
+        except BaseException as exc:
+            latency_ms = (time.perf_counter() - started) * 1000
+            error = {
+                "call": call_number,
+                "turn": request.turn,
+                "stage_before": request.stage,
+                "latency_ms": latency_ms,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+            errors.append(error)
+            append_event("model_call_failed", error)
+            save_snapshot()
+            print(
+                f"FAILED_MODEL_CALL={call_number} TURN={request.turn} "
+                f"TYPE={type(exc).__name__} MESSAGE={exc}",
+                flush=True,
+            )
+            raise
         latency_ms = (time.perf_counter() - started) * 1000
         trace_input = json.loads(decision.trace_input_json)
         expected_hash = trace_input["observation"]["sha256"]
