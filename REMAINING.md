@@ -13,8 +13,9 @@ in this file.
 - [x] Add a modular Player 2 visual steering/throttle agent, automatic quick-race setup,
       live agent/input status, and off-road/reverse recovery for Mario Kart.
 - [x] Complete a verified three-lap Mario Kart race using the local visual controller.
-      Deterministic headless evaluation finished Peach Circuit in `5:46.75` with lap
-      times `2:22.21`, `1:56.77`, and `1:27.77`.
+      The minimap-assisted deterministic evaluation finished Peach Circuit in `3:55.98`
+      with lap times `1:19.58`, `1:10.70`, and `1:25.70`, improving the original
+      road-view-only `5:46.75` result by `1:50.77`.
 - [ ] Add match telemetry: per-player decisions, recovery, lap/progress, finish order, and
       a Neatlogs trace that makes the competition inspectable.
 - [ ] Add gamepad bindings for human P3/P4; the backend already exposes four controller

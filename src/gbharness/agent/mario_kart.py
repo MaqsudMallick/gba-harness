@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from gbharness.agent.mario_kart_minimap import (
+    MarioKartMinimapNavigator,
+    MinimapObservation,
+)
 from gbharness.agent.multiplayer import PlayerDecision
 from gbharness.buttons import Button
 from gbharness.multiplayer import LinkedSession
@@ -213,7 +217,7 @@ def observe_mario_kart(rgb: np.ndarray) -> MarioKartObservation:
 
 @dataclass(slots=True)
 class MarioKartVisionAgent:
-    """Closed-loop Player 2 driver: accelerate and steer toward visible road."""
+    """Closed-loop Player 2 driver using both road view and minimap look-ahead."""
 
     decision_interval: int = 1
     dead_zone: float = 14.0
@@ -238,6 +242,8 @@ class MarioKartVisionAgent:
     escape_steer: Button = Button.LEFT
     escape_attempts: int = 0
     wrong_way_frames: int = 0
+    minimap: MarioKartMinimapNavigator = field(default_factory=MarioKartMinimapNavigator)
+    smoothed_map_error: float = 0.0
     previous_probe: np.ndarray | None = field(default=None, init=False, repr=False)
     last_motion: float = field(default=0.0, init=False)
     name: str = field(default="mario-kart-local-vision", init=False)
@@ -258,6 +264,8 @@ class MarioKartVisionAgent:
         self.escape_steer = Button.LEFT
         self.escape_attempts = 0
         self.wrong_way_frames = 0
+        self.minimap.reset()
+        self.smoothed_map_error = 0.0
         self.previous_probe = None
         self.last_motion = 0.0
 
@@ -315,6 +323,7 @@ class MarioKartVisionAgent:
 
     def decide(self, rgb: np.ndarray, frame: int) -> PlayerDecision:
         observation = observe_mario_kart(rgb)
+        map_observation = self.minimap.update(rgb, frame)
         motion = self._measure_motion(rgb)
         if observation.reverse:
             self.wrong_way_frames = self.reverse_hold_frames
@@ -367,7 +376,28 @@ class MarioKartVisionAgent:
             lateral_error = self.smoothed_center - ROAD_AIM_X
             derivative = lateral_error - self.previous_error
             self.previous_error = lateral_error
-            control = lateral_error + self.smoothed_heading + derivative * 0.35
+            road_control = lateral_error + self.smoothed_heading + derivative * 0.35
+            control = road_control
+            map_guidance = False
+            if map_observation.steering_error is not None:
+                # The road view is accurate at the kart but reacts late. The minimap
+                # aims several pixels around the course, giving the digital controller
+                # time to lift and turn before a bend reaches the bottom of the screen.
+                self.smoothed_map_error = (
+                    self.smoothed_map_error * 0.72
+                    + map_observation.steering_error * 0.28
+                )
+                # Marker displacement is quantised to whole minimap pixels and can
+                # briefly describe a slide rather than the kart's nose direction.
+                # It may anticipate a turn or reinforce the road view, but it must not
+                # overrule a strong, opposite near-field observation.
+                same_direction = road_control * self.smoothed_map_error >= 0
+                if abs(road_control) < 10:
+                    control = road_control * 0.40 + self.smoothed_map_error * 0.70
+                    map_guidance = True
+                elif same_direction:
+                    control = road_control * 0.70 + self.smoothed_map_error * 0.45
+                    map_guidance = True
 
             if self.wrong_way_frames > 0:
                 if self.last_steer == Button.LEFT:
@@ -413,6 +443,14 @@ class MarioKartVisionAgent:
                     duty = max(duty, 8)
                 elif abs(observation.heading) >= 16:
                     duty = max(duty, 5)
+                if map_guidance:
+                    map_magnitude = abs(self.smoothed_map_error)
+                    if map_magnitude >= 38:
+                        duty = max(duty, 9)
+                    elif map_magnitude >= 24:
+                        duty = max(duty, 7)
+                    elif map_magnitude >= 12:
+                        duty = max(duty, 4)
 
             # Screen-space control has the same sign as the desired wheel input:
             # road left of the kart means steer LEFT, and vice versa.  Reversing this
@@ -425,8 +463,27 @@ class MarioKartVisionAgent:
             if (
                 scene == "race"
                 and observation.on_road
-                and abs(observation.heading) >= 16
-                and phase >= (4 if abs(observation.heading) >= 28 else 7)
+                and (
+                    abs(observation.heading) >= 16
+                    or (map_guidance and abs(self.smoothed_map_error) >= 24)
+                )
+                and phase
+                >= (
+                    (
+                        7
+                        if self.minimap.completed_laps >= 1
+                        else 4
+                    )
+                    if (
+                        abs(observation.heading) >= 28
+                        or (map_guidance and abs(self.smoothed_map_error) >= 42)
+                    )
+                    else (
+                        9
+                        if self.minimap.completed_laps >= 1
+                        else 7
+                    )
+                )
             ):
                 buttons.discard(Button.A)
             if duty and phase < duty:
@@ -440,7 +497,8 @@ class MarioKartVisionAgent:
                     f"heading={observation.heading:+.1f}, control={control:+.1f}, "
                     f"duty={duty}/12, grass={observation.grass_fraction:.2f}, "
                     f"perspective={observation.perspective_expansion:.2f}, "
-                    f"confidence={observation.confidence:.2f}"
+                    f"confidence={observation.confidence:.2f}, "
+                    f"map={self._map_note(map_observation)}"
                 ),
             )
 
@@ -450,7 +508,15 @@ class MarioKartVisionAgent:
             elif self.last_steer == Button.RIGHT:
                 self.recovery_steer = Button.RIGHT
         self.lost_frames += self.decision_interval
-        if self.recovery_steer is None:
+        if map_observation.steering_error is not None:
+            self.smoothed_map_error = (
+                self.smoothed_map_error * 0.65
+                + map_observation.steering_error * 0.35
+            )
+            self.recovery_steer = (
+                Button.LEFT if self.smoothed_map_error < 0 else Button.RIGHT
+            )
+        elif self.recovery_steer is None:
             phase = (frame // 90) % 2
             self.recovery_steer = Button.LEFT if phase == 0 else Button.RIGHT
         elif self.lost_frames % 120 == 0:
@@ -465,3 +531,13 @@ class MarioKartVisionAgent:
             "recovering",
             note="Road not visible; counter-steer/search until it re-enters the view.",
         )
+
+    @staticmethod
+    def _map_note(observation: MinimapObservation) -> str:
+        if observation.position is None:
+            return "acquiring"
+        position = f"{observation.position[0]:.1f}/{observation.position[1]:.1f}"
+        if observation.steering_error is None:
+            return f"{position}:tracking"
+        direction = "forward" if observation.moving_forward else "wrong-way"
+        return f"{position}:{observation.steering_error:+.0f}deg:{direction}"

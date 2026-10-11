@@ -3,6 +3,10 @@ from __future__ import annotations
 import numpy as np
 
 from gbharness.agent.mario_kart import MarioKartVisionAgent, observe_mario_kart
+from gbharness.agent.mario_kart_minimap import (
+    MarioKartMinimapNavigator,
+    TrackProfile,
+)
 from gbharness.agent.multiplayer import AutonomousPlayer
 from gbharness.buttons import Button
 from gbharness.vision.capture import RawFrame
@@ -29,6 +33,14 @@ def rgb565_frame(rgb: np.ndarray) -> RawFrame:
     ).astype("<u2")
     height, width, _ = rgb.shape
     return RawFrame(packed.tobytes(), width, height, width * 2, 1)
+
+
+def minimap_frame(marker: tuple[int, int], *, white: bool) -> np.ndarray:
+    frame = race_frame()
+    x, y = marker
+    frame[y - 2 : y + 4, x - 2 : x + 4] = (12, 12, 12)
+    frame[y : y + 2, x : x + 2] = (245, 245, 245) if white else (230, 40, 35)
+    return frame
 
 
 def test_observation_finds_visible_road_center() -> None:
@@ -145,3 +157,53 @@ def test_agent_realigns_when_crossing_road_sideways() -> None:
     assert observe_mario_kart(frame).perspective_expansion == 1.0
     assert decision.scene == "road-realignment"
     assert decision.buttons == {Button.A, Button.LEFT}
+
+
+def test_minimap_identifies_self_from_white_red_blink() -> None:
+    profile = TrackProfile(
+        "test-course",
+        ((50, 40), (50, 20), (30, 20), (30, 40)),
+        lookahead=12,
+    )
+    navigator = MarioKartMinimapNavigator(profile=profile)
+
+    # Coordinates here are in the full 240x160 player view. The first white frame
+    # starts the identity handshake; a red fill at the same location confirms self.
+    first = navigator.update(minimap_frame((202, 118), white=True), frame=0)
+    acquired = navigator.update(minimap_frame((202, 117), white=False), frame=5)
+    navigator.update(minimap_frame((202, 114), white=True), frame=10)
+    navigator.update(minimap_frame((202, 111), white=False), frame=15)
+    navigator.update(minimap_frame((202, 108), white=True), frame=20)
+    turning = navigator.update(minimap_frame((202, 105), white=False), frame=25)
+
+    assert first.position is None
+    assert acquired.position == (50.5, 39.5)
+    assert turning.position == (50.5, 27.5)
+    assert turning.velocity == (0.0, -12.0)
+    assert turning.steering_error is not None
+    assert turning.steering_error < -20
+    assert turning.moving_forward
+
+
+def test_minimap_does_not_mistake_red_opponent_for_self() -> None:
+    navigator = MarioKartMinimapNavigator()
+
+    observation = navigator.update(minimap_frame((190, 120), white=False), frame=0)
+
+    assert observation.position is None
+
+
+def test_minimap_counts_forward_start_line_crossing() -> None:
+    profile = TrackProfile("tiny-loop", ((10, 10), (20, 10), (20, 20), (10, 20)))
+    navigator = MarioKartMinimapNavigator(profile=profile)
+
+    navigator._last_progress = 0.9
+    # A direct projection check is sufficient here; marker extraction and identity are
+    # exercised above. The public counter changes only across the profile wrap.
+    navigator.position = (10.5, 12.5)
+    navigator._history.append((0, (10.5, 12.5)))
+    frame = minimap_frame((162, 88), white=True)
+    navigator._pending_white.append((0, (10.5, 10.5)))
+    navigator.update(frame, frame=1)
+
+    assert navigator.completed_laps == 1

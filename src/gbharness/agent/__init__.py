@@ -16,6 +16,12 @@ from gbharness.agent.mario_kart import (
     open_linked_lobby,
     start_quick_race,
 )
+from gbharness.agent.mario_kart_minimap import (
+    PEACH_CIRCUIT,
+    MarioKartMinimapNavigator,
+    MinimapObservation,
+    TrackProfile,
+)
 from gbharness.agent.multiplayer import (
     AutonomousPlayer,
     PlayerDecision,
@@ -39,11 +45,15 @@ __all__ = [
     "GamePolicy",
     "MarioAutopilot",
     "MarioKartObservation",
+    "MarioKartMinimapNavigator",
     "MarioKartVisionAgent",
     "MarioVisionController",
+    "MinimapObservation",
+    "PEACH_CIRCUIT",
     "AgentRunner",
     "RunnerConfig",
     "TurnRecord",
+    "TrackProfile",
     "Verdict",
     "VertexDecisionProvider",
     "AutonomousPlayer",

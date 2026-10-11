@@ -180,14 +180,18 @@ Player 1 is **you**: hold `N` to accelerate and use the arrow keys to steer. Pla
 the agent; its keyboard mapping is disabled while autonomous control is active. The status
 panel shows the exact P1 input reaching the cartridge and the agent's current scene and
 buttons. The Mario Kart adapter reads only P2's 240x160 view, estimates near/far road
-geometry, perspective, grass coverage, and the game's wrong-way warning. It turns toward
-the visible bend, preserves turn direction when the road leaves view, realigns after
-crossing back onto asphalt, and uses a bounded reverse/forward escape when motion stalls.
+geometry, perspective, grass coverage, and the game's wrong-way warning. A temporal
+minimap navigator identifies P2 from its red/white blinking marker, estimates motion along
+an injectable course profile, and looks ahead around bends. Minimap guidance anticipates
+turns but is gated when it conflicts with a strong near-field road observation. The driver
+also preserves turn direction when the road leaves view, realigns after crossing back onto
+asphalt, and uses a bounded reverse/forward escape when motion stalls.
 `AutonomousPlayer` owns cropping and decision cadence, so another game can provide a
 `VisualPlayerAgent` without changing the emulator or frontend.
 
 The deterministic headless evaluation completed all three laps on Peach Circuit in
-`5:46.75` (lap times `2:22.21`, `1:56.77`, and `1:27.77`) using visual input only.
+`3:55.98` (lap times `1:19.58`, `1:10.70`, and `1:25.70`) using visual input only. This is
+`1:50.77` faster than the road-view-only controller's `5:46.75` benchmark.
 
 For a fast evidence capture without a window:
 
