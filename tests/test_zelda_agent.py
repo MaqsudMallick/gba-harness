@@ -210,6 +210,7 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
             3: (180, 40, 190),
         }
         x, y = position
+        rgb[y - 20 : y - 14, x - 4 : x + 5] = (245, 190, 35)
         rgb[y - 13 : y + 1, x - 4 : x + 5] = colours[player]
         packed = (
             ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
@@ -292,9 +293,25 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     reached_plans = navigator("reach_warps", tuple(reached_views))
     assert reached_plans == {1: ("wait",), 2: ("wait",), 3: ("wait",)}
     assert navigator.all_assigned_players_reached(tuple(reached_views))
+    assert navigator.assigned_players_still_reached(tuple(reached_views))
 
     displaced_views = list(reached_views)
     displaced_views[1] = view(1, (120, 80), targets[1:], ((70, 40),))
+    assert not navigator.assigned_players_still_reached(tuple(displaced_views))
+
+    repair_navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
+    repair_navigator.reached_players.update((1, 2, 3))
+    repair_navigator.forward_grid_players.update((1, 2, 3))
+    repair_navigator.assignments.update({1: 3, 2: 0, 3: 2})
+    repair_navigator.tracked_targets.update({1: (120, 88), 2: (120, 88), 3: (120, 88)})
+    repair_navigator.prepare_portal_repair(tuple(displaced_views))
+
+    assert not repair_navigator.probe_reached
+    assert repair_navigator.reached_players == {2, 3}
+    assert 1 not in repair_navigator.assignments
+    assert 1 not in repair_navigator.tracked_targets
+    assert 1 in repair_navigator.forward_grid_players
+
     for _ in range(5):
         assert navigator("reach_warps", tuple(displaced_views))[1] == ("wait",)
     displaced_plan = navigator("reach_warps", tuple(displaced_views))

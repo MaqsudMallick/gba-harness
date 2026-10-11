@@ -707,3 +707,37 @@ def test_human_portal_transition_resumes_one_shared_model() -> None:
     assert reset_calls == [True]
     assert result.turns[0].team_stage == "wait_for_human_warp"
     assert result.turns[-1].team_stage == "explore_room"
+
+
+def test_human_portal_wait_repairs_after_three_idle_invalid_frames() -> None:
+    source = HumanActionSource()
+    source.submit("move_right")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    lost_views: list[tuple[RawFrame, ...]] = []
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=1, max_model_calls=1),
+        team_target_stability_detector=lambda _views: False,
+        on_team_target_lost=lost_views.append,
+    )
+    runner._warp_reference = tuple(np.zeros((160, 240, 3), dtype=np.uint8) for _ in range(4))
+
+    result = runner._wait_for_human_warp()
+
+    assert result == "repair"
+    assert len(lost_views) == 1

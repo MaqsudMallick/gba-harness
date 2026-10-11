@@ -519,6 +519,33 @@ class FourSwordsVisualTargetNavigator:
             plans.get(player) == ("wait",) for player in (1, 2, 3)
         )
 
+    def assigned_players_still_reached(self, views: tuple[RawFrame, ...]) -> bool:
+        """Confirm that each bot still overlaps an active portal target."""
+        if len(views) < 4:
+            return False
+        return all(
+            _player_on_active_target(to_rgb(views[player]), player)
+            for player in (1, 2, 3)
+        )
+
+    def prepare_portal_repair(self, views: tuple[RawFrame, ...]) -> None:
+        """Clear the saved target only for each displaced bot."""
+        if len(views) < 4:
+            return
+        for player in (1, 2, 3):
+            if _player_on_active_target(to_rgb(views[player]), player):
+                continue
+            self.reached_players.discard(player)
+            self.reached_misses.pop(player, None)
+            self.active_counts.pop(player, None)
+            self.active_frames.pop(player, None)
+            self.assignments.pop(player, None)
+            self.tracked_targets.pop(player, None)
+            self.leaving_return_players.discard(player)
+            self.forward_grid_players.add(player)
+            if player == 1:
+                self.probe_reached = False
+
 
 def _squared_distance(first: tuple[int, int], second: tuple[int, int]) -> int:
     return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2
@@ -551,6 +578,17 @@ def _player_near_teammate(
         and _squared_distance(position, teammate_position) <= 28 * 28
         for teammate in teammates
         if (teammate_position := _link_position(rgb, teammate)) is not None
+    )
+
+
+def _player_on_active_target(rgb: np.ndarray, player: int) -> bool:
+    """Detect whether one bot overlaps an active portal target."""
+    position = _link_position(rgb, player)
+    if position is None:
+        return False
+    return any(
+        _squared_distance(position, target) <= 14 * 14
+        for target in _active_target_centres(rgb)
     )
 
 

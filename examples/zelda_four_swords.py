@@ -282,6 +282,16 @@ def main(argv: list[str] | None = None) -> int:
                         if target_navigator is not None
                         else None
                     ),
+                    team_target_stability_detector=(
+                        target_navigator.assigned_players_still_reached
+                        if target_navigator is not None
+                        else None
+                    ),
+                    on_team_target_lost=(
+                        target_navigator.prepare_portal_repair
+                        if target_navigator is not None
+                        else None
+                    ),
                     gameplay_detector=(
                         (lambda frame: four_swords_gameplay_visible(frame, 4))
                         if target_navigator is not None

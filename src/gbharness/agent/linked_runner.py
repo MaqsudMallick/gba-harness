@@ -25,6 +25,7 @@ from gbharness.vision.encode import to_png, to_rgb
 from gbharness.vision.multiplayer import split_player_frames
 
 LinkedRunStatus = Literal["completed", "turn_limit", "stopped", "call_budget"]
+HumanWarpWaitResult = Literal["transition", "repair", "stopped"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +123,8 @@ class LinkedAgentRunner:
     ) = None
     probe_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
     team_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
+    team_target_stability_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
+    on_team_target_lost: Callable[[tuple[RawFrame, ...]], None] | None = None
     gameplay_detector: Callable[[RawFrame], bool] | None = None
     on_next_room: Callable[[], None] | None = None
     on_stage_change: Callable[[str], None] | None = None
@@ -237,9 +240,20 @@ class LinkedAgentRunner:
                     previous_views[player] = rgb.copy()
 
                 if self._team_stage == "wait_for_human_warp":
-                    if not self._wait_for_human_warp():
+                    wait_result = self._wait_for_human_warp()
+                    if wait_result == "stopped":
                         status = "stopped"
                         break
+                    if wait_result == "repair":
+                        self._team_stage = "reach_warps"
+                        self._team_plans = {}
+                        self._team_instruction = "Wait while the bots restore the portal formation."
+                        if self.on_stage_change is not None:
+                            self.on_stage_change("PORTAL REPAIR — restoring displaced bots")
+                        self.telemetry.log(
+                            "A human movement displaced a bot; portal repair resumed"
+                        )
+                        continue
                     self._team_stage = "explore_room"
                     self._cached_team_outcomes = None
                     self._cached_team_stage = ""
@@ -532,9 +546,6 @@ class LinkedAgentRunner:
                     if self.config.continue_after_team_target:
                         self._team_stage = "wait_for_human_warp"
                         self._warp_reference = tuple(rgb.copy() for rgb in after_rgbs)
-                        self._cached_team_outcomes = None
-                        self._cached_team_stage = ""
-                        self._cached_team_uses = 0
                         self._team_instruction = "Move P1 to the free pad on the forward portal."
                         if self.on_stage_change is not None:
                             self.on_stage_change(
@@ -1124,7 +1135,7 @@ class LinkedAgentRunner:
             return self._team_stage
         return stages[min(current + 1, len(stages) - 1)]
 
-    def _wait_for_human_warp(self) -> bool:
+    def _wait_for_human_warp(self) -> HumanWarpWaitResult:
         """Keep the AI Links still until P1 causes a visible room transition."""
         human = next(
             (
@@ -1136,14 +1147,19 @@ class LinkedAgentRunner:
             None,
         )
         if human is None or self._warp_reference is None:
-            return False
+            return "stopped"
 
         provider = human.provider
         assert isinstance(provider, HumanDecisionProvider)
         transition_seen = False
+        human_action_seen = False
+        idle_polls = 0
+        displaced_confirmations = 0
         while not self.stop_event.is_set():
             action = provider.poll_action(timeout=0.1)
             submitted = action if action is not None and action in self.policy.actions else "wait"
+            human_action_seen = human_action_seen or action is not None
+            idle_polls = idle_polls + 1 if action is None else 0
             result = self.session.submit({human.player: self.policy.resolve(submitted)})
             current = self.frames.require()
             gameplay_visible = (
@@ -1164,10 +1180,24 @@ class LinkedAgentRunner:
                 )
             if gameplay_visible and (transition_seen or changed_views >= 3):
                 self._warp_reference = None
-                return True
+                return "transition"
+            stable = (
+                self.team_target_stability_detector(current_views)
+                if self.team_target_stability_detector is not None
+                else True
+            )
+            if human_action_seen and idle_polls > 0 and gameplay_visible and not stable:
+                displaced_confirmations += 1
+            else:
+                displaced_confirmations = 0
+            if displaced_confirmations >= 3:
+                if self.on_team_target_lost is not None:
+                    self.on_team_target_lost(current_views)
+                self._warp_reference = tuple(rgb.copy() for rgb in current_rgbs)
+                return "repair"
             if result.emulation_ended:
-                return False
-        return False
+                return "stopped"
+        return "stopped"
 
     def _action_plans(
         self,
