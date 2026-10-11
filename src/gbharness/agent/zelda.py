@@ -21,6 +21,10 @@ ZELDA_ACTIONS: Final[dict[str, Action]] = {
     "move_down": hold("down", 18),
     "move_left": hold("left", 18),
     "move_right": hold("right", 18),
+    "nudge_up": hold("up", 5),
+    "nudge_down": hold("down", 5),
+    "nudge_left": hold("left", 5),
+    "nudge_right": hold("right", 5),
     "face_up": tap("up", hold_frames=2, gap_frames=2),
     "face_down": tap("down", hold_frames=2, gap_frames=2),
     "face_left": tap("left", hold_frames=2, gap_frames=2),
@@ -41,6 +45,10 @@ ZELDA_ACTION_DESCRIPTIONS: Final[dict[str, str]] = {
     "move_down": "Move south for a short, controlled distance.",
     "move_left": "Move west for a short, controlled distance.",
     "move_right": "Move east for a short, controlled distance.",
+    "nudge_up": "Move north by one fine positioning step.",
+    "nudge_down": "Move south by one fine positioning step.",
+    "nudge_left": "Move west by one fine positioning step.",
+    "nudge_right": "Move east by one fine positioning step.",
     "face_up": "Face north with a minimal direction tap.",
     "face_down": "Face south with a minimal direction tap.",
     "face_left": "Face west with a minimal direction tap.",
@@ -384,7 +392,7 @@ def _precision_route_step(
     """Use a short direction tap near a target to prevent overshoot."""
     dx = target[0] - player[0]
     dy = target[1] - player[1]
-    prefix = "face" if dx * dx + dy * dy <= 28 * 28 else "move"
+    prefix = "nudge" if dx * dx + dy * dy <= 28 * 28 else "move"
     if abs(dx) > abs(dy):
         return (f"{prefix}_{'right' if dx > 0 else 'left'}",)
     return (f"{prefix}_{'down' if dy > 0 else 'up'}",)
@@ -394,7 +402,7 @@ def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
     red = rgb[:, :, 0]
     green = rgb[:, :, 1]
     blue = rgb[:, :, 2]
-    mask = (red > 210) & (green > 45) & (green < 195) & (blue < 105)
+    mask = (red > 210) & (green > 45) & (green < 210) & (blue < 105)
     centres: list[tuple[int, int]] = []
     for xs, ys in _components(mask):
         width = int(xs.max() - xs.min() + 1)
@@ -423,7 +431,7 @@ def _active_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
         x1 = min(rgb.shape[1], int(xs.max()) + 4)
         y0 = max(0, int(ys.min()) - 3)
         y1 = min(rgb.shape[0], int(ys.max()) + 4)
-        if int(np.count_nonzero(white[y0:y1, x0:x1])) < 50:
+        if int(np.count_nonzero(white[y0:y1, x0:x1])) < 25:
             continue
         centres.append((int(np.mean(xs)), int(np.mean(ys))))
     return tuple(centres)
@@ -459,11 +467,18 @@ def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
         mask = (red > 105) & (blue > 105) & (green < 125)
     else:
         raise ValueError(f"unsupported visual Link player index: {player}")
+    yellow = (red > 200) & (green > 140) & (blue < 130)
     candidates: list[tuple[float, int, int]] = []
     for xs, ys in _components(mask):
         width = int(xs.max() - xs.min() + 1)
         height = int(ys.max() - ys.min() + 1)
         if not 4 <= len(xs) <= 180 or width > 22 or height > 28 or int(ys.min()) < 20:
+            continue
+        x0 = max(0, int(xs.min()) - 10)
+        x1 = min(rgb.shape[1], int(xs.max()) + 11)
+        y0 = max(0, int(ys.min()) - 14)
+        y1 = min(rgb.shape[0], int(ys.max()) + 9)
+        if int(np.count_nonzero(yellow[y0:y1, x0:x1])) < 4:
             continue
         x = int(np.mean(xs))
         y = int(np.mean(ys))
