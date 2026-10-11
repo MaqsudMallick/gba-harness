@@ -10,6 +10,7 @@ import argparse
 import os
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pygame
@@ -17,6 +18,7 @@ import pygame
 from gbharness.agent import (
     FOUR_SWORDS_POLICY,
     FOUR_SWORDS_ROLES,
+    FirstTrainingPuzzleResult,
     LinkedAgentRunner,
     LinkedEpisodeResult,
     LinkedRunnerConfig,
@@ -24,6 +26,7 @@ from gbharness.agent import (
     PlayerAssignment,
     VertexDecisionProvider,
     bootstrap_four_swords,
+    solve_first_training_puzzle,
 )
 from gbharness.backends import LibretroMultiplayerPort, find_multiplayer_core, validate_rom
 from gbharness.config import load_settings
@@ -78,6 +81,11 @@ def parser() -> argparse.ArgumentParser:
         "--setup-only",
         action="store_true",
         help="enter verified four-player gameplay and exit without cloud calls",
+    )
+    result.add_argument(
+        "--skip-first-puzzle",
+        action="store_true",
+        help="start Vertex agents in the lobby instead of solving the first switch puzzle",
     )
     result.add_argument("--screenshot", type=Path)
     result.add_argument("--log-turns", action="store_true")
@@ -182,7 +190,32 @@ def main(argv: list[str] | None = None) -> int:
                     telemetry=telemetry,
                     on_turn=_print_turn if args.log_turns else None,
                 )
-                result = _run_live(runner, latch, args.scale) if args.live else runner.run()
+
+                def puzzle_prelude(
+                    on_phase: Callable[[str], None] | None = None,
+                ) -> FirstTrainingPuzzleResult:
+                    solved = solve_first_training_puzzle(
+                        linked,
+                        latch,
+                        on_phase=on_phase,
+                        telemetry=telemetry,
+                    )
+                    print(
+                        "zelda puzzle passed: Basic Training 1 outer switches solved, "
+                        f"frames={solved.frames_advanced}, "
+                        f"warp_sweep_steps={solved.warp_sweep_steps}, "
+                        f"reward_chests_visible={solved.reward_chests_visible}",
+                        flush=True,
+                    )
+                    return solved
+
+                prelude = None if args.skip_setup or args.skip_first_puzzle else puzzle_prelude
+                if args.live:
+                    result = _run_live(runner, latch, args.scale, prelude=prelude)
+                else:
+                    if prelude is not None:
+                        prelude()
+                    result = runner.run()
                 final_png = to_png(latch.require())
                 summary = (
                     f"zelda agents finished: status={result.status}, "
@@ -221,6 +254,8 @@ def _run_live(
     runner: LinkedAgentRunner,
     latch: FrameLatch,
     scale: int,
+    *,
+    prelude: Callable[[Callable[[str], None] | None], FirstTrainingPuzzleResult] | None = None,
 ) -> LinkedEpisodeResult:
     """Keep a responsive four-console window open while agents run in a worker."""
     pygame.init()
@@ -233,6 +268,11 @@ def _run_live(
     font = pygame.font.Font(None, 22)
     clock = pygame.time.Clock()
     latest: list[LinkedTurnRecord | None] = [None]
+    phase = [
+        "FAST MOTOR SKILL — preparing the first cooperative puzzle"
+        if prelude is not None
+        else "4 VERTEX AGENTS — observing the current room"
+    ]
     outcome: list[LinkedEpisodeResult] = []
     failure: list[BaseException] = []
     previous_on_turn = runner.on_turn
@@ -246,6 +286,9 @@ def _run_live(
 
     def work() -> None:
         try:
+            if prelude is not None:
+                prelude(lambda message: phase.__setitem__(0, message))
+                phase[0] = "PUZZLE 1 SOLVED — four Vertex agents are observing"
             outcome.append(runner.run())
         except BaseException as exc:
             failure.append(exc)
@@ -275,11 +318,7 @@ def _run_live(
 
             record = latest[0]
             complete = not worker.is_alive()
-            header = (
-                "RUN FINISHED — press Esc to close"
-                if complete
-                else "4 VERTEX AGENTS LIVE — keyboard control disabled"
-            )
+            header = "RUN FINISHED — press Esc to close" if complete else phase[0]
             lines = [header]
             if record is None:
                 lines.append("All four players are observing the dungeon…")

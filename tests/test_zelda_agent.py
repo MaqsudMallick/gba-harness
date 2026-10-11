@@ -6,6 +6,7 @@ import numpy as np
 
 from gbharness.agent.zelda import (
     bootstrap_four_swords,
+    first_training_reward_visible,
     four_swords_gameplay_visible,
 )
 from gbharness.buttons import Button
@@ -78,3 +79,27 @@ def test_bootstrap_is_deterministic_and_stops_at_visible_gameplay() -> None:
     assert result.handshake_confirms == 1
     assert session.frame == 3042
     assert all(not buttons for buttons in port.held)
+
+
+def test_first_training_reward_needs_both_visible_chests() -> None:
+    rgb = np.zeros((320, 480, 3), dtype=np.uint8)
+
+    def frame() -> RawFrame:
+        packed = (
+            ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (rgb[:, :, 2].astype(np.uint16) >> 3)
+        )
+        return RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=480,
+            height=320,
+            pitch=960,
+            index=0,
+        )
+
+    assert not first_training_reward_visible(frame())
+    rgb[80:90, 30:40] = (255, 230, 0)
+    assert not first_training_reward_visible(frame())
+    rgb[80:90, 190:200] = (255, 230, 0)
+    assert first_training_reward_visible(frame())

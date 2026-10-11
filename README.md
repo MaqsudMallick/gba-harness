@@ -217,11 +217,16 @@ uv run python examples/zelda_four_swords.py --setup-only \
   --screenshot artifacts/zelda-four-swords-4p-setup.png
 ```
 
-Then run four concurrent Vertex visual agents. Each receives only its own 240x160 console,
-a distinct team role, and the same bounded action vocabulary; their chosen macros are
-applied atomically on the shared emulator clock. The default team uses four Google models
-available through Vertex AI: Gemini 2.5 Flash Lite, Gemini 2.5 Flash, Gemini 2.5 Pro, and
-Gemini 3 Flash Preview.
+Then run the hybrid four-agent system. A bounded local motor skill unlocks the tutorial,
+assembles all four Links on the warp, collects their opening Rupees, and solves Basic
+Training 1's first cooperative switch task. It visually verifies the two revealed reward
+chests before the Vertex agents continue from the solved room. This keeps pixel steering
+fast while reserving model calls for higher-level decisions.
+
+Each Vertex agent receives only its own 240x160 console, a distinct team role, and the same
+bounded action vocabulary; their chosen macros are applied atomically on the shared emulator
+clock. The default team uses four Google models available through Vertex AI: Gemini 2.5
+Flash Lite, Gemini 2.5 Flash, Gemini 2.5 Pro, and Gemini 3 Flash Preview.
 
 ```bash
 uv run python examples/zelda_four_swords.py \
@@ -229,8 +234,9 @@ uv run python examples/zelda_four_swords.py \
   --screenshot artifacts/zelda-four-swords-4p-agent.png
 ```
 
-Add `--live` to keep a responsive four-console Pygame window open during decisions. The
-window shows every model's latest action and remains open after the bounded run until Escape.
+Add `--live` to watch the fast lobby route and cooperative puzzle before the model turn. The
+window reports each phase, shows every model's latest action, and remains open after the
+bounded run until Escape. Use `--skip-first-puzzle` only when debugging the raw lobby.
 
 `--max-model-calls` is a hard team-wide cost ceiling; a complete four-player turn consumes
 four calls. The run prints per-player actions and token totals plus its Neatlogs trace ID.

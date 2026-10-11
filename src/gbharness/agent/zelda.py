@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
@@ -10,6 +11,7 @@ import numpy as np
 from gbharness.actions import Action, hold, tap, wait
 from gbharness.agent.contracts import GamePolicy
 from gbharness.multiplayer import LinkedSession
+from gbharness.observability import NullTelemetry, RunTelemetry
 from gbharness.vision.capture import FrameLatch, RawFrame
 from gbharness.vision.encode import to_rgb
 from gbharness.vision.multiplayer import split_player_frames
@@ -72,6 +74,15 @@ class FourSwordsBootstrapResult:
 
     frames_advanced: int
     handshake_confirms: int
+
+
+@dataclass(frozen=True, slots=True)
+class FirstTrainingPuzzleResult:
+    """Visible evidence from the fast cooperative tutorial solution."""
+
+    frames_advanced: int
+    warp_sweep_steps: int
+    reward_chests_visible: bool
 
 
 _FOUR_SWORDS_SETUP: Final[tuple[Action, ...]] = (
@@ -157,4 +168,129 @@ def bootstrap_four_swords(
     raise RuntimeError(
         "Four Swords did not reach four-player gameplay after "
         f"{max_handshake_confirms} synchronized handshake confirmations"
+    )
+
+
+def first_training_reward_visible(frame: RawFrame) -> bool:
+    """Recognize both reward chests revealed by the first switch puzzle."""
+    view = to_rgb(split_player_frames(frame, 4)[0])
+    regions = (view[75:110, 25:55], view[75:110, 185:215])
+    return all(
+        int(
+            np.count_nonzero(
+                (region[:, :, 0] > 240) & (region[:, :, 1] > 210) & (region[:, :, 2] < 80)
+            )
+        )
+        >= 50
+        for region in regions
+    )
+
+
+def solve_first_training_puzzle(
+    session: LinkedSession,
+    frames: FrameLatch,
+    *,
+    on_phase: Callable[[str], None] | None = None,
+    telemetry: RunTelemetry | None = None,
+) -> FirstTrainingPuzzleResult:
+    """Enter Basic Training 1 and reveal its two switch-reward chests.
+
+    Models choose strategy; this bounded visual motor skill handles pixel-level
+    movement at emulator speed. It verifies the warp and final rewards from pixels
+    without reading RAM or restoring a save state.
+    """
+    if session.port.players != 4:
+        raise ValueError("the first Four Swords training puzzle requires four players")
+
+    emit = on_phase or (lambda _message: None)
+    trace = telemetry or NullTelemetry()
+    started = session.frame
+
+    def one(player: int, action: Action) -> None:
+        result = session.submit({player: action})
+        if result.emulation_ended:
+            raise RuntimeError("emulation ended during the first training puzzle")
+
+    def team(actions: dict[int, Action]) -> None:
+        result = session.submit(actions)
+        if result.emulation_ended:
+            raise RuntimeError("emulation ended during the first training puzzle")
+
+    with trace.span("solve_first_training_puzzle", "WORKFLOW"):
+        emit("FAST MOTOR SKILL — unlocking the tutorial lobby")
+        one(0, hold("right", 16))
+        one(0, hold("up", 18))
+        one(0, tap("a", hold_frames=3, gap_frames=9))
+        one(0, wait(120))
+        # Rapid taps leave the dialogue half-open and strand Green Link.
+        for _ in range(12):
+            one(0, tap("a", hold_frames=3, gap_frames=9))
+            one(0, wait(120))
+
+        emit("FAST MOTOR SKILL — assembling all four Links on the warp")
+        approaches = (
+            (0, 0, -24, 18),
+            (1, -16, 24, 18),
+            (2, 48, -24, 48),
+            (3, -48, 24, 48),
+        )
+        for player, centre, side, depth in approaches:
+            if centre:
+                one(player, hold("right" if centre > 0 else "left", abs(centre)))
+            one(player, hold("up", 130))
+            one(player, hold("right" if side > 0 else "left", abs(side)))
+            one(player, hold("down", depth))
+
+        one(1, hold("up", 15))
+        reference = to_rgb(frames.require()).astype(np.int16)
+
+        # Collision at the narrow door makes Purple's final coordinate vary. Sweep
+        # a finite 44x44 box and stop on the visible room transition.
+        one(3, hold("left", 20))
+        one(3, hold("up", 20))
+        sweep_steps = 0
+        entered = False
+        for row in range(11):
+            direction = "right" if row % 2 == 0 else "left"
+            for _column in range(11):
+                one(3, hold(direction, 4))
+                one(0, wait(20))
+                sweep_steps += 1
+                current = to_rgb(frames.require()).astype(np.int16)
+                if float(np.mean(np.abs(current - reference))) > 35:
+                    entered = True
+                    break
+            if entered:
+                break
+            one(3, hold("down", 4))
+        if not entered:
+            raise RuntimeError("the four-player tutorial warp did not activate")
+
+        one(0, wait(500))
+        emit("FAST MOTOR SKILL — collecting four Rupees and regrouping")
+        team({player: hold("down", 120) for player in range(4)})
+        one(0, wait(120))
+        team({1: hold("left", 24), 3: hold("left", 24)})
+        team({1: hold("down", 120), 3: hold("down", 120)})
+        one(0, wait(180))
+
+        emit("COOPERATIVE PUZZLE — Green and Purple taking both switches")
+        team({0: hold("left", 16), 3: hold("right", 21)})
+        team({0: hold("down", 55), 3: hold("down", 55)})
+        one(0, wait(300))
+
+        visible = first_training_reward_visible(frames.require())
+        if not visible:
+            raise RuntimeError("the first puzzle did not reveal both reward chests")
+        trace.log(
+            "first Four Swords training puzzle solved in {frames} frames; "
+            "reward chests are visible",
+            frames=session.frame - started,
+        )
+        emit("PUZZLE 1 SOLVED — both reward chests are visible")
+
+    return FirstTrainingPuzzleResult(
+        frames_advanced=session.frame - started,
+        warp_sweep_steps=sweep_steps,
+        reward_chests_visible=visible,
     )

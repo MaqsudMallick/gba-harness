@@ -44,9 +44,12 @@ from gbharness.agent.zelda import (
     FOUR_SWORDS_ROLES,
     ZELDA_ACTION_DESCRIPTIONS,
     ZELDA_ACTIONS,
+    FirstTrainingPuzzleResult,
     FourSwordsBootstrapResult,
     bootstrap_four_swords,
+    first_training_reward_visible,
     four_swords_gameplay_visible,
+    solve_first_training_puzzle,
 )
 
 __all__ = [
@@ -61,6 +64,7 @@ __all__ = [
     "EpisodeResult",
     "FOUR_SWORDS_POLICY",
     "FOUR_SWORDS_ROLES",
+    "FirstTrainingPuzzleResult",
     "FourSwordsBootstrapResult",
     "GamePolicy",
     "LinkedAgentRunner",
@@ -88,10 +92,12 @@ __all__ = [
     "ZELDA_ACTIONS",
     "ZELDA_ACTION_DESCRIPTIONS",
     "bootstrap_four_swords",
+    "first_training_reward_visible",
     "four_swords_gameplay_visible",
     "observe_mario",
     "observe_mario_kart",
     "open_linked_lobby",
     "start_quick_race",
+    "solve_first_training_puzzle",
     "resolve",
 ]
