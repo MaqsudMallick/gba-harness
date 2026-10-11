@@ -79,8 +79,8 @@ portable across games and multiplayer formats.
 - Completed post-fix verification: `ruff` passed, strict `mypy` passed for all 23 source
   files, and all 303 tests passed. A focused regression test checks the 320-token budget and
   a new observability test checks stable trace-ID capture.
-- Pending external verification: refresh the expired Entire web login, confirm the repository
-  import has synced, and verify the recorded checkpoint URL is accessible to reviewers.
+- Resolved on 2026-10-11: refreshed the Entire login and confirmed the GitHub mirror is
+  ready. The recorded checkpoint ID and target URL remain the submission evidence.
 - Pending external verification: open the recorded application traces in the dashboard and
   save sanitized shareable links or screenshots. The local API key can ingest and Doctor can
   verify its own probe, but public trace readback requires a separate read token/project ID.
@@ -88,24 +88,40 @@ portable across games and multiplayer formats.
   revenue, and runway; `cfo-ai-brief.md` contains prepared inputs, but only the resulting
   cfo.ai plan counts as submission evidence.
 
+### 2026-10-11
+
+- Completed: added a local closed-loop Mario World 1-1 visual skill after the high-frequency
+  Vertex baseline exhausted its request quota. The controller uses only framebuffer cues and
+  bounded controller actions; it does not inspect game RAM or restore save states.
+- Completed fresh-boot emulator verification: the agent cleared World 1-1, touched the flag,
+  entered the castle, and stopped only after the World 1-2 card appeared. The passing run
+  completed in 126 control turns and 2,928 emulated frames.
+- Completed Neatlogs application evidence for the level-clear run: trace
+  `857e03574e75b220897fd4c0c42dc5b1` finished with status `completed` using provider
+  `local-vision`. A local verification screenshot is written to
+  `artifacts/agent-level-clear.png` (the artifacts directory remains uncommitted).
+- Completed: the Entire GitHub mirror is ready at `/gh/MaqsudMallick/gba-harness`, and the
+  recorded checkpoint remains `01M4K4DYFVKB5TF5R77KZMJD5J` at commit `c47ae93...`.
+
 ## Demo
 
-Pending. Current local smoke tests:
+Current runnable demo and smoke tests:
 
 ```bash
 uv run python examples/run_rom.py --rom roms/game.gba --screenshot artifacts/boot.png
 uv run python examples/live_rom.py
+uv run python examples/agent_rom.py --controller local --max-turns 150
 ```
 
 ROMs and credentials are local-only and must not be committed or shared.
 
 ## Known limitations and next steps
 
-- The autonomous loop and live viewer are implemented but have not yet been exercised with
-  a real Vertex decision.
+- World 1-1 has a verified local visual skill; unfamiliar levels still require a general
+  provider or another game-specific skill.
 - The reusable game-policy boundary exists, but only the Mario starter policy is implemented.
-- No representative application trace has been verified yet. Per the supplied Neatlogs
-  instructions, the builder must run the instrumented entry point and provide its trace ID.
+- The representative completed application trace has been recorded; a sanitized dashboard
+  link or screenshot still has to be prepared for the public submission.
 - Agent-vs-human and agent-vs-agent match orchestration are planned, not implemented.
 - Ranked matches need a policy for save states; emulator rollback should normally be
   disabled because it gives agents an unfair advantage.
@@ -127,7 +143,5 @@ Confirmed from the published hackathon page on 2026-10-10:
 Outstanding:
 
 - Shareable neatlogs trace links or sanitized screenshots.
-- Verify reviewer access to Entire checkpoint `01M4K4DYFVKB5TF5R77KZMJD5J` at the recorded
-  commit URL.
 - cfo.ai business plan.
 - Public repository, demo video, and public build posts.

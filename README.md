@@ -137,21 +137,29 @@ Right Shift for Select, and Escape to quit.
 
 ## Autonomous agent
 
-Vertex AI uses constrained JSON output as a decision classifier: each turn must select one
-key from the current game's finite action vocabulary. `DecisionProvider` is vendor-neutral,
-and `GamePolicy` is game-neutral, so a multiplayer game can provide a different goal and
-action table without importing Vertex or changing the runner.
+The default Mario controller is a local closed-loop visual skill. It reads emulator frames,
+reacts to enemies, pipes, pits, and staircases, and confirms completion only after the flag,
+castle, and next-level card appear. It does not read game RAM or restore emulator state.
+This keeps high-frequency platforming control local while Neatlogs records the episode.
+
+Vertex AI remains available as the general visual decision provider. Its structured output
+must select one key from the finite action vocabulary. `DecisionProvider` is vendor-neutral,
+and `GamePolicy` is game-neutral, so another game can provide a different goal and action
+table without changing the runner.
 
 ```bash
-# Prerequisites: NEATLOGS_API_KEY, GOOGLE_CLOUD_PROJECT, and ADC are configured.
+# Local Mario skill: only NEATLOGS_API_KEY is required for tracing.
 uv run python -m neatlogs doctor --probe --json
-uv run python examples/agent_rom.py --max-turns 100
+uv run python examples/agent_rom.py --controller local --max-turns 150
+
+# General cloud vision agent: also requires GOOGLE_CLOUD_PROJECT and ADC.
+uv run python examples/agent_rom.py --controller vertex --max-turns 100
 ```
 
 The Pygame window says **AGENT CONTROL**, disables keyboard gameplay input, and displays the
 latest action, confidence, scene, and progress estimate. Use `--headless` for evaluation
-runs. Each run is grouped in neatlogs as `visual-game-agent`, including the Vertex call,
-agent decision, controller action, state changes, errors, and recovery attempts.
+runs. Each run is grouped in neatlogs as `visual-game-agent`, including agent decisions,
+controller actions, state changes, errors, recovery attempts, and Vertex calls when used.
 The final console summary includes `neatlogs_trace_id`, including on failed runs, so the
 exact dashboard trace can be attached to a bug report or hackathon submission.
 
@@ -167,7 +175,7 @@ ROMs, API keys, private traces, and account information are never committed.
 ## Checks
 
 ```bash
-uv run pytest        # 302 tests
+uv run pytest        # 309 tests
 uv run ruff check src/ tests/ examples/
 uv run mypy
 ```

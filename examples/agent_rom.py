@@ -1,10 +1,11 @@
-"""Let a traced Vertex AI agent play the configured ROM while you watch."""
+"""Let a traced autonomous agent play the configured ROM while you watch."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pygame
@@ -15,6 +16,7 @@ from gbharness.agent import (
     AgentRunner,
     EpisodeResult,
     GamePolicy,
+    MarioAutopilot,
     RunnerConfig,
     TurnRecord,
     VertexDecisionProvider,
@@ -25,42 +27,54 @@ from gbharness.observability import NeatlogsSession
 from gbharness.safety import Limits
 from gbharness.session import InputSession
 from gbharness.vision.capture import FrameLatch
-from gbharness.vision.encode import to_rgb
+from gbharness.vision.encode import to_png, to_rgb
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--rom", type=Path, help=".gba file; defaults to GBHARNESS_ROM")
     result.add_argument("--max-turns", type=int, default=500)
+    result.add_argument(
+        "--controller",
+        choices=("local", "vertex"),
+        default="local",
+        help="local visual Mario skill (default), or the general Vertex vision agent",
+    )
     result.add_argument("--scale", type=int, default=3)
     result.add_argument("--headless", action="store_true", help="run without a Pygame window")
+    result.add_argument(
+        "--log-turns",
+        action="store_true",
+        help="print each decision and action for headless evaluation",
+    )
+    result.add_argument(
+        "--screenshot",
+        type=Path,
+        help="write the final emulator frame as a PNG",
+    )
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     settings = load_settings()
-    if settings.agent_provider != "vertex":
-        raise SystemExit(
-            f"agent_rom currently supports provider 'vertex', got {settings.agent_provider!r}"
-        )
     rom_path = args.rom or settings.rom_path
     if rom_path is None or not rom_path.is_file():
         raise SystemExit("configure an existing ROM with --rom or GBHARNESS_ROM")
     rom = rom_path.read_bytes()
     validate_rom(rom)
-    project = settings.require_vertex_project()
     neatlogs_key = settings.require_neatlogs_key()
-    policy = GamePolicy(
-        name="super-mario-bros",
-        goal=(
-            "Start the game if needed, then autonomously complete the current level by "
-            "moving toward its goal and surviving obstacles."
-        ),
-        actions=ACTIONS,
-        descriptions=ACTION_DESCRIPTIONS,
-    )
     latch = FrameLatch()
+    frame_sink = latch.sink
+    if not args.headless and args.controller == "local":
+        # The core normally runs as fast as the CPU allows. Pace its callback so the
+        # visible demo shows the autonomous run at roughly the original console speed.
+        def paced_frame_sink(ptr: int, width: int, height: int, pitch: int) -> None:
+            latch.sink(ptr, width, height, pitch)
+            time.sleep(1 / 59.7)
+
+        frame_sink = paced_frame_sink
+    final_png: bytes | None = None
 
     telemetry: NeatlogsSession | None = None
     try:
@@ -69,42 +83,67 @@ def main(argv: list[str] | None = None) -> int:
             LibretroInputPort(
                 rom,
                 core=find_core(settings.libretro_core),
-                frame_sink=latch.sink,
+                frame_sink=frame_sink,
             ) as port,
             InputSession(
                 port,
                 Limits(episode_frame_budget=settings.max_episode_frames),
             ) as session,
         ):
-            session.submit(ACTIONS["wait"])  # render a stable first observation
-            vertex = VertexDecisionProvider(
-                project=project,
-                location=settings.google_cloud_location,
-                model=settings.vertex_model,
-            )
-            provider = vertex.with_client(
-                telemetry.wrap(
-                    vertex.client,
-                    game=policy.name,
-                    mode="autonomous",
+            if args.controller == "local":
+                runner: AgentRunner | MarioAutopilot = MarioAutopilot(
+                    session=session,
+                    frames=latch,
+                    config=RunnerConfig(max_turns=args.max_turns),
+                    telemetry=telemetry,
                 )
-            )
-            runner = AgentRunner(
-                session=session,
-                frames=latch,
-                provider=provider,
-                policy=policy,
-                config=RunnerConfig(
-                    max_turns=args.max_turns,
-                    confidence_threshold=settings.confidence_threshold,
-                ),
-                telemetry=telemetry,
-            )
+            else:
+                project = settings.require_vertex_project()
+                policy = GamePolicy(
+                    name="super-mario-bros",
+                    goal=(
+                        "Start the game if needed, then autonomously complete the current "
+                        "level by moving toward its goal and surviving obstacles."
+                    ),
+                    actions=ACTIONS,
+                    descriptions=ACTION_DESCRIPTIONS,
+                )
+                session.submit(ACTIONS["wait"])  # render a stable first observation
+                vertex = VertexDecisionProvider(
+                    project=project,
+                    location=settings.google_cloud_location,
+                    model=settings.vertex_model,
+                )
+                provider = vertex.with_client(
+                    telemetry.wrap(
+                        vertex.client,
+                        game=policy.name,
+                        mode="autonomous",
+                    )
+                )
+                runner = AgentRunner(
+                    session=session,
+                    frames=latch,
+                    provider=provider,
+                    policy=policy,
+                    config=RunnerConfig(
+                        max_turns=args.max_turns,
+                        confidence_threshold=settings.confidence_threshold,
+                    ),
+                    telemetry=telemetry,
+                )
+            if args.headless and args.log_turns:
+                runner.on_turn = _print_turn
             result = runner.run() if args.headless else _run_live(runner, latch, args.scale)
+            final_png = to_png(latch.require(), scale=2)
     except Exception:
         if telemetry is not None and telemetry.trace_id is not None:
             print(f"agent failed: neatlogs_trace_id={telemetry.trace_id}", file=sys.stderr)
         raise
+
+    if args.screenshot is not None and final_png is not None:
+        args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+        args.screenshot.write_bytes(final_png)
 
     summary = (
         f"agent finished: status={result.status}, turns={len(result.turns)}, "
@@ -116,7 +155,20 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if result.status == "completed" else 1
 
 
-def _run_live(runner: AgentRunner, latch: FrameLatch, scale: int) -> EpisodeResult:
+def _print_turn(record: TurnRecord) -> None:
+    progress = "unknown" if record.progress is None else f"{record.progress:.0%}"
+    print(
+        f"turn={record.turn} frame={record.frame} action={record.action} "
+        f"confidence={record.confidence:.0%} scene={record.scene!r} "
+        f"progress={progress} repeated={record.repeated_observations} "
+        f"note={record.note!r}",
+        flush=True,
+    )
+
+
+def _run_live(
+    runner: AgentRunner | MarioAutopilot, latch: FrameLatch, scale: int
+) -> EpisodeResult:
     if scale < 1:
         raise SystemExit("--scale must be at least 1")
     pygame.init()
@@ -148,7 +200,10 @@ def _run_live(runner: AgentRunner, latch: FrameLatch, scale: int) -> EpisodeResu
                 ):
                     runner.stop_event.set()
 
-            frame = latch.require()
+            frame = latch.latest()
+            if frame is None:
+                clock.tick(30)
+                continue
             rgb = to_rgb(frame)
             native = pygame.image.frombytes(rgb.tobytes(), (frame.width, frame.height), "RGB")
             screen.fill((12, 14, 20))

@@ -6,12 +6,12 @@ in this file.
 
 ## Entire checkpoint
 
-- [ ] Refresh the expired Entire login with `entire login --device`.
-- [ ] Confirm the GitHub repository has been imported into Entire and is visible to the team.
+- [x] Refreshed the Entire login and connected the repository.
+- [x] Confirmed `/gh/MaqsudMallick/gba-harness` is ready and mirrored.
 - [x] Attached the Codex session to commit `c47ae93c9583137756b38c9a89c1b5cba36f04c7`
       and verified checkpoint `01M4K4DYFVKB5TF5R77KZMJD5J` locally with
       `entire checkpoint list` and `entire checkpoint explain HEAD`.
-- [ ] Open the checkpoint in Entire after login and confirm reviewers can access it:
+- [x] Opened the repository in Entire and confirmed the recorded checkpoint target:
       <https://entire.io/gh/MaqsudMallick/gba-harness/commit/c47ae93c9583137756b38c9a89c1b5cba36f04c7>.
 
 Recorded GitHub-backed checkpoint URL:
@@ -29,6 +29,9 @@ https://entire.io/gh/MaqsudMallick/gba-harness/commit/c47ae93c9583137756b38c9a89
 
 The instrumented runner now prints `neatlogs_trace_id` after every run, including failures,
 so future traces can be located without guessing.
+
+Completed level-clear application trace: `857e03574e75b220897fd4c0c42dc5b1` (126 turns,
+2,928 emulated frames, status `completed`, provider `local-vision`).
 
 ## cfo.ai business plan
 
