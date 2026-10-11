@@ -376,6 +376,58 @@ def test_blocked_repeated_movement_escalates_recovery_actions() -> None:
     ]
 
 
+def test_blocked_repeated_attack_stops_until_the_scene_changes() -> None:
+    repeated_attack = [Decision("attack_down", 1.0, "blocked") for _ in range(3)]
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assignments([repeated_attack.copy() for _ in range(4)]),
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=3, max_model_calls=12),
+    )
+
+    result = runner.run()
+
+    assert [turn.players[0].action for turn in result.turns] == [
+        "attack_down",
+        "wait",
+        "wait",
+    ]
+
+
+def test_room_plan_is_reused_until_visual_stagnation_requires_replanning() -> None:
+    source = HumanActionSource()
+    captain = FakeTeamProvider(stage="explore_room")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=3, max_model_calls=2),
+        team_provider=captain,
+        visual_plan_override=lambda _stage, _views: {},
+    )
+    runner._team_stage = "explore_room"
+
+    result = runner.run()
+
+    assert result.model_calls == 2
+    assert len(captain.requests) == 2
+
+
 def test_npc_autopilot_executes_only_the_captains_human_dialogue_plan() -> None:
     source = HumanActionSource()
     captain = FakeTeamProvider()

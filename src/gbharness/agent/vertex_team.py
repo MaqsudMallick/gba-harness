@@ -122,6 +122,27 @@ class VertexTeamDecisionProvider:
             "terminal",
             "note",
         ]
+        explore_target_keys: list[str] = []
+        if self.navigation_only and request.stage == "explore_room":
+            explore_target_keys = [
+                f"player_{player + 1}_target" for player in request.ai_players
+            ]
+            common_properties.update(
+                {
+                    "room_map": {"type": "string"},
+                    "replan_trigger": {"type": "string"},
+                    **{
+                        key: {
+                            "type": "string",
+                            "description": (
+                                "One visible landmark and its screen-relative location."
+                            ),
+                        }
+                        for key in explore_target_keys
+                    },
+                }
+            )
+            common_required.extend(["room_map", *explore_target_keys, "replan_trigger"])
         if guided_navigation:
             common_properties.update(
                 {
@@ -173,11 +194,16 @@ class VertexTeamDecisionProvider:
             if request.stage == "explore_room":
                 stage_instructions = (
                     "Current stage: explore_room. Inspect only the current visible room. "
-                    "Maintain a short visual map in objective. Record each bot's relative "
+                    "Maintain a short visual map in room_map. Record each bot's relative "
                     "area, the entrance, visible openings, NPCs, obstacles, and candidate "
-                    "targets. Preserve confirmed map facts from the shared state. Identify "
+                    "exits. Preserve confirmed map facts from the shared state. Identify "
                     "the immediate cooperative obstacle. Give P2, P3, and P4 short "
-                    "screen-relative plans. Keep stage=explore_room. P1 is human. "
+                    "screen-relative plans of three to six actions when the route is clear. "
+                    "Set one persistent visible landmark for each bot in player_N_target. "
+                    "Prefer a door, wall opening, stairs, corridor end, floor switch, or "
+                    "collectible that leads away from the entrance. State the visual event "
+                    "that requires a new plan in replan_trigger. Keep stage=explore_room. "
+                    "P1 is human. "
                     "Give no automated P1 plan. Set terminal=true only when the screenshot "
                     "shows that the room objective is complete. Do not use a walkthrough. "
                     "A two-by-two group of four large circles with a centre character or "
@@ -189,9 +215,11 @@ class VertexTeamDecisionProvider:
                     "visible, approach it with the scout, interact, read every visible "
                     "dialogue page, and preserve its instruction in objective. If one move "
                     "direction repeats without visual progress, do not repeat it. Choose a "
-                    "perpendicular escape direction from the visible free space. Use sword "
-                    "or directional attack actions only when a visible enemy or breakable "
-                    "obstacle blocks progress."
+                    "perpendicular escape direction from the visible free space. Pink figures "
+                    "fixed at the centre of blue warp tiles are portal markers. They are not "
+                    "enemies. Do not attack a stationary marker, wall, floor switch, or portal. "
+                    "Use sword or directional attack actions only when a visible moving enemy "
+                    "or breakable obstacle blocks the selected route."
                 )
             else:
                 stage_instructions = (
@@ -282,11 +310,22 @@ class VertexTeamDecisionProvider:
         scene = str(payload.get("scene", "unknown"))
         stage = _bounded_stage(request.stage, str(payload.get("stage", request.stage)))
         model_objective = str(payload.get("objective", "coordinate the current room"))
-        objective = (
-            _NAVIGATION_OBJECTIVES.get(stage, model_objective)
-            if self.navigation_only
-            else model_objective
-        )
+        if self.navigation_only and stage == "explore_room":
+            targets = "; ".join(
+                f"P{player + 1}={payload.get(f'player_{player + 1}_target', 'unassigned')}"
+                for player in request.ai_players
+            )
+            objective = (
+                f"{model_objective} Map: {payload.get('room_map', 'unknown')}. "
+                f"Targets: {targets}. Replan when: "
+                f"{payload.get('replan_trigger', 'the visible room changes')}."
+            )
+        else:
+            objective = (
+                _NAVIGATION_OBJECTIVES.get(stage, model_objective)
+                if self.navigation_only
+                else model_objective
+            )
         terminal = bool(payload.get("terminal", False))
         note = str(payload.get("note", ""))
         decisions: dict[int, Decision] = {}

@@ -139,6 +139,7 @@ class LinkedAgentRunner:
         default=None, init=False, repr=False
     )
     _cached_team_stage: str = field(default="", init=False, repr=False)
+    _cached_team_uses: int = field(default=0, init=False, repr=False)
     _warp_reference: tuple[np.ndarray, ...] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -242,6 +243,7 @@ class LinkedAgentRunner:
                     self._team_stage = "explore_room"
                     self._cached_team_outcomes = None
                     self._cached_team_stage = ""
+                    self._cached_team_uses = 0
                     self._team_plans = {}
                     self._team_human_plan = ()
                     self._team_objective = "Inspect and solve the new visible room."
@@ -287,12 +289,24 @@ class LinkedAgentRunner:
                     for assignment in self.assignments
                 )
                 cached_team_outcomes = self._cached_team_outcomes
+                ai_repeated = tuple(
+                    repeated[assignment.player]
+                    for assignment in self.assignments
+                    if assignment.participant_type == "agent"
+                )
+                explore_cache_valid = (
+                    self._team_stage != "explore_room"
+                    or (
+                        self._cached_team_uses < 3
+                        and (not ai_repeated or max(ai_repeated) < 2)
+                    )
+                )
                 reuse_team_plan = (
                     self.team_provider is not None
                     and self.visual_plan_override is not None
-                    and self._team_stage != "explore_room"
                     and cached_team_outcomes is not None
                     and self._cached_team_stage == self._team_stage
+                    and explore_cache_valid
                 )
                 calls_needed = 0 if reuse_team_plan else model_decisions_per_turn
                 if calls + calls_needed > self.config.max_model_calls:
@@ -319,6 +333,7 @@ class LinkedAgentRunner:
                     self._team_input_tokens = 0
                     self._team_output_tokens = 0
                     self._team_model_calls = 0
+                    self._cached_team_uses += 1
                     self.telemetry.log(
                         "Reused the team plan for stage {stage} on turn {turn}",
                         stage=self._team_stage,
@@ -336,6 +351,7 @@ class LinkedAgentRunner:
                     ):
                         self._cached_team_outcomes = outcomes
                         self._cached_team_stage = self._team_stage
+                        self._cached_team_uses = 1
 
                 decisions: list[Decision] = []
                 for assignment, outcome in zip(self.assignments, outcomes, strict=True):
@@ -518,6 +534,7 @@ class LinkedAgentRunner:
                         self._warp_reference = tuple(rgb.copy() for rgb in after_rgbs)
                         self._cached_team_outcomes = None
                         self._cached_team_stage = ""
+                        self._cached_team_uses = 0
                         self._team_instruction = "Move P1 to the free pad on the forward portal."
                         if self.on_stage_change is not None:
                             self.on_stage_change(
@@ -1228,6 +1245,21 @@ class LinkedAgentRunner:
             return "wait"
 
         action = decision.action
+        if (
+            repeated >= 1
+            and recent
+            and action.startswith("attack_")
+            and action in tuple(recent)[-3:]
+        ):
+            self.telemetry.log(
+                "P{player} attack guard changed {requested} to wait after "
+                "{stagnant} stagnant observations",
+                level="warning",
+                player=player + 1,
+                requested=action,
+                stagnant=repeated,
+            )
+            return "wait"
         if (
             repeated < 1
             or not recent
