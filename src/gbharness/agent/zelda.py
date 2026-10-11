@@ -278,7 +278,7 @@ class FourSwordsVisualTargetNavigator:
         rgb = to_rgb(views[1])
         if _private_dialogue_visible(rgb):
             self.dialogue_attempts = 0
-            return {1: ("interact", "wait", "wait", "interact", "wait", "wait")}
+            return {1: ("interact", "wait", "wait", "wait", "wait", "wait")}
 
         self.dialogue_attempts += 1
         if self.dialogue_attempts >= 3:

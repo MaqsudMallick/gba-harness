@@ -283,7 +283,7 @@ def test_visual_target_navigator_faces_npc_and_recovers_from_failed_dialogue() -
         "interact",
         "wait",
         "wait",
-        "interact",
+        "wait",
         "wait",
         "wait",
     )
