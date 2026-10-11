@@ -211,6 +211,17 @@ class FourSwordsVisualTargetNavigator:
     probe_reached: bool = False
     dialogue_attempts: int = 0
 
+    def reset(self) -> None:
+        """Clear first-room visual state before the team enters a new room."""
+        self.assignments.clear()
+        self.tracked_targets.clear()
+        self.reached_players.clear()
+        self.near_players.clear()
+        self.active_counts.clear()
+        self.active_frames.clear()
+        self.probe_reached = False
+        self.dialogue_attempts = 0
+
     def __call__(
         self,
         stage: str,
@@ -378,9 +389,7 @@ def _pink_npc_position(rgb: np.ndarray) -> tuple[int, int] | None:
         # smaller pink regions that are separated by yellow hair and skin.
         if not 55 <= len(xs) <= 180 or not 10 <= width <= 24 or not 8 <= height <= 28:
             continue
-        candidates.append(
-            (int(np.mean(xs)) + region_x, int(np.mean(ys)) + region_y)
-        )
+        candidates.append((int(np.mean(xs)) + region_x, int(np.mean(ys)) + region_y))
     if not candidates:
         return None
     player = _link_position(rgb, 1) or (120, 88)
@@ -505,9 +514,7 @@ def _target_grids(
     """Find compact two-by-two target grids in visible target centres."""
     grids: list[tuple[tuple[int, int], ...]] = []
     for candidate in combinations(targets, 4):
-        upper_left, upper_right, lower_left, lower_right = _order_target_grid(
-            candidate
-        )
+        upper_left, upper_right, lower_left, lower_right = _order_target_grid(candidate)
         horizontal = (
             upper_right[0] - upper_left[0],
             lower_right[0] - lower_left[0],
@@ -618,11 +625,7 @@ def _closed_runs(
             else:
                 runs.append([start, end])
             start = None
-    return tuple(
-        (start_x, end_x)
-        for start_x, end_x in runs
-        if end_x - start_x + 1 >= min_length
-    )
+    return tuple((start_x, end_x) for start_x, end_x in runs if end_x - start_x + 1 >= min_length)
 
 
 def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
@@ -634,12 +637,7 @@ def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
     elif player == 2:
         blue_wide = blue.astype(np.int16)
         red_wide = red.astype(np.int16)
-        mask = (
-            (blue > 105)
-            & (red < 115)
-            & (green < 175)
-            & (blue_wide > red_wide + 35)
-        )
+        mask = (blue > 105) & (red < 115) & (green < 175) & (blue_wide > red_wide + 35)
     elif player == 3:
         mask = (red > 105) & (blue > 105) & (green < 125)
     else:

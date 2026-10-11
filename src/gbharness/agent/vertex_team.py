@@ -73,8 +73,7 @@ class VertexTeamDecisionProvider:
             allowed = [
                 action
                 for action in allowed
-                if action.startswith(("move_", "face_"))
-                or action in {"interact", "wait"}
+                if action.startswith(("move_", "face_")) or action in {"interact", "wait"}
             ]
         descriptions = "\n".join(
             f"- {option.key}: {option.description}" for option in request.actions
@@ -85,6 +84,13 @@ class VertexTeamDecisionProvider:
             if action.startswith(("move_", "face_")) or action in {"interact", "wait"}
         ]
         facing_actions = [action for action in human_allowed if action.startswith("face_")]
+        stage_values = (
+            ["explore_room"]
+            if self.navigation_only and request.stage == "explore_room"
+            else list(_NPC_STAGE_ORDER)
+            if self.navigation_only
+            else ["explore"]
+        )
         plan_properties = {
             f"player_{player + 1}_plan": {
                 "type": "array",
@@ -98,7 +104,7 @@ class VertexTeamDecisionProvider:
             "scene": {"type": "string"},
             "stage": {
                 "type": "string",
-                "enum": list(_NPC_STAGE_ORDER) if self.navigation_only else ["explore"],
+                "enum": stage_values,
             },
             "objective": {"type": "string"},
             **plan_properties,
@@ -129,9 +135,7 @@ class VertexTeamDecisionProvider:
                     "dialogue_visible": {"type": "boolean"},
                 }
             )
-            common_required.extend(
-                ["npc_actor_player", "npc_facing_action", "dialogue_visible"]
-            )
+            common_required.extend(["npc_actor_player", "npc_facing_action", "dialogue_visible"])
         else:
             common_properties.update(
                 {
@@ -165,33 +169,42 @@ class VertexTeamDecisionProvider:
         }
         stage_instructions = ""
         if self.navigation_only:
-            stage_instructions = (
-                f"Current stage: {request.stage}. The visible pink rabbit-like character "
-                "is a friendly NPC, not an enemy. Use these stages in order: reach_npc, "
-                f"advance_dialogue, probe_target, reach_warps, complete. P1 is human and "
-                f"must never receive an automated plan. P{npc_player_number} is the NPC "
-                f"bot. During reach_npc, assign P{npc_player_number} a direct screen-relative "
-                f"route to stand next to the pink NPC. Other AI Links must wait. During "
-                f"advance_dialogue, make P{npc_player_number} face the NPC and use interact "
-                "until all dialogue boxes close. Set npc_facing_action from the visible "
-                "relative positions. Put that face action immediately before interact. "
-                "Other AI Links must wait. Set dialogue_visible=true only when a text box is "
-                "visible now. During "
-                f"probe_target, P{npc_player_number} is the only scout. Continue up past the "
-                "NPC. Ignore the return warp grid below the starting position. Route that "
-                "Link to the centre of one tile in the complete forward warp grid. P1, P3, "
-                "and P4 must "
-                f"wait. P{npc_player_number} must not wait unless it is already centred on "
-                "the tile or a "
-                "visible response is in progress. Use two to six movement actions when the "
-                "route is clear. Change to reach_warps only after P2 causes a visible "
-                "response from that tile. During reach_warps, assign each AI Link a "
-                "separate tile in the same forward warp grid. Do not return to the lower "
-                "warp grid. P1 remains under human control and must "
-                "wait. A Link that "
-                "reaches a target must wait. Do not select an attack action. Move forward by "
-                "no more than one stage in one plan. "
-            )
+            if request.stage == "explore_room":
+                stage_instructions = (
+                    "Current stage: explore_room. Inspect only the current visible room. "
+                    "Identify its immediate cooperative obstacle. Give P2, P3, and P4 "
+                    "short screen-relative plans. Keep stage=explore_room. P1 is human. "
+                    "Give no automated P1 plan. Set terminal=true only when the screenshot "
+                    "shows that the room objective is complete. Do not use a walkthrough."
+                )
+            else:
+                stage_instructions = (
+                    f"Current stage: {request.stage}. The visible pink rabbit-like character "
+                    "is a friendly NPC, not an enemy. Use these stages in order: reach_npc, "
+                    f"advance_dialogue, probe_target, reach_warps, complete. P1 is human and "
+                    f"must never receive an automated plan. P{npc_player_number} is the NPC "
+                    f"bot. During reach_npc, assign P{npc_player_number} a direct screen-relative "
+                    f"route to stand next to the pink NPC. Other AI Links must wait. During "
+                    f"advance_dialogue, make P{npc_player_number} face the NPC and use interact "
+                    "until all dialogue boxes close. Set npc_facing_action from the visible "
+                    "relative positions. Put that face action immediately before interact. "
+                    "Other AI Links must wait. Set dialogue_visible=true only when a text box is "
+                    "visible now. During "
+                    f"probe_target, P{npc_player_number} is the only scout. Continue up past the "
+                    "NPC. Ignore the return warp grid below the starting position. Route that "
+                    "Link to the centre of one tile in the complete forward warp grid. P1, P3, "
+                    "and P4 must "
+                    f"wait. P{npc_player_number} must not wait unless it is already centred on "
+                    "the tile or a "
+                    "visible response is in progress. Use two to six movement actions when the "
+                    "route is clear. Change to reach_warps only after P2 causes a visible "
+                    "response from that tile. During reach_warps, assign each AI Link a "
+                    "separate tile in the same forward warp grid. Do not return to the lower "
+                    "warp grid. P1 remains under human control and must "
+                    "wait. A Link that "
+                    "reaches a target must wait. Do not select an attack action. Move forward by "
+                    "no more than one stage in one plan. "
+                )
         observation_png = request.image_png
         observation_label = "four-player composite view"
         if (
@@ -263,9 +276,7 @@ class VertexTeamDecisionProvider:
         decisions: dict[int, Decision] = {}
         plans: dict[int, tuple[str, ...]] = {}
         for player in request.ai_players:
-            plan = _action_plan(
-                payload.get(f"player_{player + 1}_plan"), allowed, player + 1
-            )
+            plan = _action_plan(payload.get(f"player_{player + 1}_plan"), allowed, player + 1)
             if (
                 self.navigation_only
                 and stage in {"reach_npc", "advance_dialogue"}
@@ -321,9 +332,7 @@ class VertexTeamDecisionProvider:
                 "human_instruction": human_instruction,
                 "human_plan": list(human_plan),
                 "npc_actor_player": npc_player_number if self.navigation_only else None,
-                "player_plans": {
-                    f"P{player + 1}": list(plan) for player, plan in plans.items()
-                },
+                "player_plans": {f"P{player + 1}": list(plan) for player, plan in plans.items()},
             },
             "usage": {
                 "input_tokens": input_tokens,
@@ -396,9 +405,7 @@ class HierarchicalVertexTeamDecisionProvider:
 
     @property
     def name(self) -> str:
-        return "vertex-hierarchical-team:" + ",".join(
-            provider.model for provider in self.providers
-        )
+        return "vertex-hierarchical-team:" + ",".join(provider.model for provider in self.providers)
 
     @property
     def calls_per_plan(self) -> int:
@@ -481,9 +488,7 @@ class HierarchicalVertexTeamDecisionProvider:
             model=provider.model,
             contents=[
                 prompt,
-                types.Part.from_bytes(
-                    data=request.player_images[player], mime_type="image/png"
-                ),
+                types.Part.from_bytes(data=request.player_images[player], mime_type="image/png"),
             ],
             config=types.GenerateContentConfig(
                 system_instruction=_OBSERVER_INSTRUCTION,
@@ -597,9 +602,7 @@ class HierarchicalVertexTeamDecisionProvider:
         if not 0 <= confidence <= 1:
             raise ValueError("team confidence must be in [0, 1]")
         plans = {
-            player: _action_plan(
-                payload.get(f"player_{player + 1}_plan"), allowed, player + 1
-            )
+            player: _action_plan(payload.get(f"player_{player + 1}_plan"), allowed, player + 1)
             for player in request.ai_players
         }
         human_plan = _action_plan(payload.get("human_plan"), allowed, 1)
@@ -623,8 +626,7 @@ class HierarchicalVertexTeamDecisionProvider:
             human_instruction=str(payload.get("human_instruction", "")),
             objective=str(payload.get("objective", "coordinate the current room")),
             captain=provider.name,
-            input_tokens=coordinator_input
-            + sum(proposal.input_tokens for proposal in proposals),
+            input_tokens=coordinator_input + sum(proposal.input_tokens for proposal in proposals),
             output_tokens=coordinator_output
             + sum(proposal.output_tokens for proposal in proposals),
             plans=plans,

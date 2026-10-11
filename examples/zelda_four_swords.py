@@ -31,6 +31,7 @@ from gbharness.agent import (
     VertexTeamDecisionProvider,
     bootstrap_four_swords,
     four_swords_dialogue_visible,
+    four_swords_gameplay_visible,
     four_swords_npc_adjacent,
     solve_first_training_puzzle,
 )
@@ -240,9 +241,7 @@ def main(argv: list[str] | None = None) -> int:
                         ai_providers.append(provider)
                     assignments.append(PlayerAssignment(player, role, provider))
 
-                target_navigator = (
-                    FourSwordsVisualTargetNavigator() if args.npc_autopilot else None
-                )
+                target_navigator = FourSwordsVisualTargetNavigator() if args.npc_autopilot else None
                 runner = LinkedAgentRunner(
                     session=linked,
                     frames=latch,
@@ -254,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
                         confidence_threshold=settings.confidence_threshold,
                         max_consecutive_errors=args.max_consecutive_errors,
                         autoplay_human_dialogue=False,
+                        continue_after_team_target=bool(
+                            human_player and target_navigator is not None
+                        ),
                     ),
                     team_provider=(
                         VertexTeamDecisionProvider(
@@ -268,9 +270,7 @@ def main(argv: list[str] | None = None) -> int:
                     dialogue_detector=(
                         four_swords_dialogue_visible if args.npc_autopilot else None
                     ),
-                    npc_reached_detector=(
-                        four_swords_npc_adjacent if args.npc_autopilot else None
-                    ),
+                    npc_reached_detector=(four_swords_npc_adjacent if args.npc_autopilot else None),
                     visual_plan_override=target_navigator,
                     probe_target_detector=(
                         target_navigator.probe_target_reached
@@ -282,6 +282,12 @@ def main(argv: list[str] | None = None) -> int:
                         if target_navigator is not None
                         else None
                     ),
+                    gameplay_detector=(
+                        (lambda frame: four_swords_gameplay_visible(frame, 4))
+                        if target_navigator is not None
+                        else None
+                    ),
+                    on_next_room=(target_navigator.reset if target_navigator is not None else None),
                 )
 
                 def puzzle_prelude(
@@ -380,14 +386,10 @@ def main(argv: list[str] | None = None) -> int:
                                 "output_tokens": episode.output_tokens,
                                 "providers": list(episode.providers),
                                 "final_stage": (
-                                    episode.turns[-1].team_stage
-                                    if episode.turns
-                                    else "not_started"
+                                    episode.turns[-1].team_stage if episode.turns else "not_started"
                                 ),
                                 "last_instruction": (
-                                    episode.turns[-1].team_instruction
-                                    if episode.turns
-                                    else ""
+                                    episode.turns[-1].team_instruction if episode.turns else ""
                                 ),
                             },
                         )
@@ -488,6 +490,7 @@ def _run_live(
             previous_on_turn(record)
 
     runner.on_turn = update
+    runner.on_stage_change = lambda message: phase.__setitem__(0, message)
 
     def keep_human_active(_episode: LinkedEpisodeResult) -> None:
         if human_actions is None or not human_player:

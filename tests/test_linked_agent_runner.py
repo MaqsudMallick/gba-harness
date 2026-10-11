@@ -36,6 +36,26 @@ class StaticComposite:
         )
 
 
+class SequenceComposite:
+    def __init__(self, values: list[int]) -> None:
+        self._frames = [
+            RawFrame(
+                data=bytes([value, value]) * (480 * 320),
+                width=480,
+                height=320,
+                pitch=480 * 2,
+                index=index,
+            )
+            for index, value in enumerate(values, start=1)
+        ]
+        self._index = 0
+
+    def require(self) -> RawFrame:
+        frame = self._frames[min(self._index, len(self._frames) - 1)]
+        self._index += 1
+        return frame
+
+
 class RecordingPort:
     players = 4
 
@@ -140,9 +160,7 @@ class RecordingTelemetry:
         attributes: Mapping[str, object] | None = None,
     ) -> Iterator[str]:
         recorded = dict(attributes or {})
-        recorded.update(
-            io_attributes(kind, input_value=input_value, output_value=output_value)
-        )
+        recorded.update(io_attributes(kind, input_value=input_value, output_value=output_value))
         with self._lock:
             self.spans.append((name, kind, recorded))
         yield name
@@ -539,9 +557,7 @@ def test_team_captain_assigns_three_actions_with_one_model_call() -> None:
     assert plan_input["goal"] == FOUR_SWORDS_POLICY.goal
     assert plan_input["observation"]["sha256"]
     assert plan_output["objective"] == "occupy both switches"
-    assert plan_output["decisions"]["P2"]["decision_reason"] == (
-        "Follow the joint plan."
-    )
+    assert plan_output["decisions"]["P2"]["decision_reason"] == ("Follow the joint plan.")
 
 
 def test_visual_motor_steps_reuse_one_team_plan_for_the_stage() -> None:
@@ -585,3 +601,57 @@ def test_visual_motor_steps_reuse_one_team_plan_for_the_stage() -> None:
         ("move_up",),
         ("move_up",),
     ]
+
+
+def test_human_portal_transition_resumes_one_shared_model() -> None:
+    source = HumanActionSource()
+    source.submit("move_up")
+    captain = FakeTeamProvider(stage="reach_warps")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    reset_calls: list[bool] = []
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(
+            FrameLatch,
+            SequenceComposite([0, 0, 0, 255, 255, 255]),
+        ),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(
+            max_turns=3,
+            max_model_calls=2,
+            continue_after_team_target=True,
+        ),
+        team_provider=captain,
+        visual_plan_override=lambda _stage, _views: {
+            1: ("wait",),
+            2: ("wait",),
+            3: ("wait",),
+        },
+        team_target_detector=lambda _views: True,
+        gameplay_detector=lambda _frame: True,
+        on_next_room=lambda: reset_calls.append(True),
+    )
+    runner._team_stage = "reach_warps"
+
+    result = runner.run()
+
+    assert result.status == "turn_limit"
+    assert result.model_calls == 2
+    assert len(captain.requests) == 2
+    assert captain.requests[1].stage == "explore_room"
+    assert reset_calls == [True]
+    assert result.turns[0].team_stage == "wait_for_human_warp"
+    assert result.turns[-1].team_stage == "explore_room"

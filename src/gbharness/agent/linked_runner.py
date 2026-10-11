@@ -45,6 +45,7 @@ class LinkedRunnerConfig:
     terminal_confirmations: int = 2
     max_consecutive_errors: int = 3
     autoplay_human_dialogue: bool = False
+    continue_after_team_target: bool = False
 
     def __post_init__(self) -> None:
         if self.max_turns < 1:
@@ -121,6 +122,9 @@ class LinkedAgentRunner:
     ) = None
     probe_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
     team_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
+    gameplay_detector: Callable[[RawFrame], bool] | None = None
+    on_next_room: Callable[[], None] | None = None
+    on_stage_change: Callable[[str], None] | None = None
     _team_instruction: str = field(default="", init=False, repr=False)
     _team_captain: str = field(default="", init=False, repr=False)
     _team_input_tokens: int = field(default=0, init=False, repr=False)
@@ -135,6 +139,7 @@ class LinkedAgentRunner:
         default=None, init=False, repr=False
     )
     _cached_team_stage: str = field(default="", init=False, repr=False)
+    _warp_reference: tuple[np.ndarray, ...] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         players = self.session.port.players
@@ -211,18 +216,14 @@ class LinkedAgentRunner:
                     and self.npc_reached_detector(views)
                 ):
                     self._team_stage = "advance_dialogue"
-                    self.telemetry.log(
-                        "Visual NPC adjacency advanced the team to advance_dialogue"
-                    )
+                    self.telemetry.log("Visual NPC adjacency advanced the team to advance_dialogue")
                 if (
                     self._team_stage == "probe_target"
                     and self.probe_target_detector is not None
                     and self.probe_target_detector(views)
                 ):
                     self._team_stage = "reach_warps"
-                    self.telemetry.log(
-                        "Visual P2 target overlap advanced the team to reach_warps"
-                    )
+                    self.telemetry.log("Visual P2 target overlap advanced the team to reach_warps")
                 rgbs = tuple(to_rgb(view) for view in views)
                 pngs = tuple(to_png(view) for view in views)
                 for player, rgb in enumerate(rgbs):
@@ -233,6 +234,26 @@ class LinkedAgentRunner:
                         else 0
                     )
                     previous_views[player] = rgb.copy()
+
+                if self._team_stage == "wait_for_human_warp":
+                    if not self._wait_for_human_warp():
+                        status = "stopped"
+                        break
+                    self._team_stage = "explore_room"
+                    self._cached_team_outcomes = None
+                    self._cached_team_stage = ""
+                    self._team_plans = {}
+                    self._team_human_plan = ()
+                    self._team_objective = "Inspect and solve the new visible room."
+                    self._dialogue_seen = False
+                    previous_views = [None] * len(self.assignments)
+                    repeated = [0] * len(self.assignments)
+                    if self.on_next_room is not None:
+                        self.on_next_room()
+                    if self.on_stage_change is not None:
+                        self.on_stage_change("NEXT ROOM — one shared Gemini model is planning")
+                    self.telemetry.log("The visible room changed; the shared team model resumed")
+                    continue
 
                 requests = tuple(
                     DecisionRequest(
@@ -253,6 +274,7 @@ class LinkedAgentRunner:
                 reuse_team_plan = (
                     self.team_provider is not None
                     and self.visual_plan_override is not None
+                    and self._team_stage != "explore_room"
                     and cached_team_outcomes is not None
                     and self._cached_team_stage == self._team_stage
                 )
@@ -467,9 +489,7 @@ class LinkedAgentRunner:
                     and not dialogue_after
                 ):
                     self._team_stage = "probe_target"
-                    self.telemetry.log(
-                        "Visual dialogue close advanced the team to probe_target"
-                    )
+                    self.telemetry.log("Visual dialogue close advanced the team to probe_target")
                 self._dialogue_seen = self._dialogue_seen or dialogue_after
                 visual_team_complete = (
                     self._team_stage == "reach_warps"
@@ -477,10 +497,24 @@ class LinkedAgentRunner:
                     and self.team_target_detector(after_views)
                 )
                 if visual_team_complete:
-                    self._team_stage = "complete"
-                    self.telemetry.log(
-                        "Visual target overlap confirmed P2 through P4 completion"
-                    )
+                    if self.config.continue_after_team_target:
+                        self._team_stage = "wait_for_human_warp"
+                        self._warp_reference = tuple(rgb.copy() for rgb in after_rgbs)
+                        self._cached_team_outcomes = None
+                        self._cached_team_stage = ""
+                        self._team_instruction = "Move P1 to the free pad on the forward portal."
+                        if self.on_stage_change is not None:
+                            self.on_stage_change(
+                                "BOTS READY — move P1 to the free forward portal pad"
+                            )
+                        self.telemetry.log(
+                            "P2 through P4 reached the forward portal; waiting for P1"
+                        )
+                    else:
+                        self._team_stage = "complete"
+                        self.telemetry.log(
+                            "Visual target overlap confirmed P2 through P4 completion"
+                        )
                 changed_players = tuple(
                     player + 1
                     for player, (before, after) in enumerate(zip(rgbs, after_rgbs, strict=True))
@@ -551,7 +585,7 @@ class LinkedAgentRunner:
                 )
                 if self.on_turn is not None:
                     self.on_turn(record)
-                if visual_team_complete:
+                if visual_team_complete and not self.config.continue_after_team_target:
                     status = "completed"
                     break
                 if result.emulation_ended:
@@ -580,8 +614,7 @@ class LinkedAgentRunner:
                     "output_tokens": output_tokens,
                     "final_stage": self._team_stage,
                     "final_actions": {
-                        f"P{player.player + 1}": list(player.plan)
-                        for player in records[-1].players
+                        f"P{player.player + 1}": list(player.plan) for player in records[-1].players
                     }
                     if records
                     else {},
@@ -866,8 +899,7 @@ class LinkedAgentRunner:
                 self.telemetry.annotate(
                     plan_span,
                     {
-                        "neatlogs.agent.input": decision.trace_input_json
-                        or fallback_input_json,
+                        "neatlogs.agent.input": decision.trace_input_json or fallback_input_json,
                         "team.captain": decision.captain,
                         "team.objective": decision.objective,
                         "team.stage": decision.stage,
@@ -896,8 +928,7 @@ class LinkedAgentRunner:
                 self.telemetry.record_output(
                     plan_span,
                     "AGENT",
-                    decision.trace_output_json
-                    or _team_decision_json(decision, team_request.stage),
+                    decision.trace_output_json or _team_decision_json(decision, team_request.stage),
                 )
                 return decision
 
@@ -983,9 +1014,7 @@ class LinkedAgentRunner:
                     "team_stage": team.stage,
                     "scene": decision.scene,
                     "decision_reason": decision.note,
-                    "assigned_plan": list(
-                        team.plans.get(assignment.player, (decision.action,))
-                    ),
+                    "assigned_plan": list(team.plans.get(assignment.player, (decision.action,))),
                 },
                 sort_keys=True,
             )
@@ -1043,6 +1072,8 @@ class LinkedAgentRunner:
 
     def _next_team_stage(self, proposed: str) -> str:
         """Accept only forward stage changes from the visual team planner."""
+        if self._team_stage == "explore_room":
+            return "explore_room"
         stages = (
             "reach_npc",
             "advance_dialogue",
@@ -1060,6 +1091,51 @@ class LinkedAgentRunner:
             return self._team_stage
         return stages[min(current + 1, len(stages) - 1)]
 
+    def _wait_for_human_warp(self) -> bool:
+        """Keep the AI Links still until P1 causes a visible room transition."""
+        human = next(
+            (
+                assignment
+                for assignment in self.assignments
+                if assignment.participant_type == "human"
+                and isinstance(assignment.provider, HumanDecisionProvider)
+            ),
+            None,
+        )
+        if human is None or self._warp_reference is None:
+            return False
+
+        provider = human.provider
+        assert isinstance(provider, HumanDecisionProvider)
+        transition_seen = False
+        while not self.stop_event.is_set():
+            action = provider.poll_action(timeout=0.1)
+            submitted = action if action is not None and action in self.policy.actions else "wait"
+            result = self.session.submit({human.player: self.policy.resolve(submitted)})
+            current = self.frames.require()
+            gameplay_visible = (
+                self.gameplay_detector(current) if self.gameplay_detector is not None else True
+            )
+            transition_seen = transition_seen or not gameplay_visible
+            current_views = split_player_frames(current, len(self.assignments))
+            current_rgbs = tuple(to_rgb(view) for view in current_views)
+            changed_views = sum(
+                _visual_change_fraction(before, after) >= 0.18
+                for before, after in zip(self._warp_reference, current_rgbs, strict=True)
+            )
+            if action is not None:
+                self.telemetry.log(
+                    "P{player} human portal action {action}",
+                    player=human.player + 1,
+                    action=submitted,
+                )
+            if gameplay_visible and (transition_seen or changed_views >= 3):
+                self._warp_reference = None
+                return True
+            if result.emulation_ended:
+                return False
+        return False
+
     def _action_plans(
         self,
         action_keys: tuple[str, ...],
@@ -1069,9 +1145,7 @@ class LinkedAgentRunner:
         for index, assignment in enumerate(self.assignments):
             if assignment.participant_type == "human":
                 plans.append(
-                    self._team_human_plan
-                    if self.config.autoplay_human_dialogue
-                    else ("wait",)
+                    self._team_human_plan if self.config.autoplay_human_dialogue else ("wait",)
                 )
                 continue
             proposed = self._team_plans.get(assignment.player, (action_keys[index],))
@@ -1265,14 +1339,18 @@ def _meaningful_visual_change(
     changed_pixel_fraction: float = 0.04,
 ) -> bool:
     """Detect meaningful scene/camera progress, not ordinary sprite animation."""
+    return _visual_change_fraction(previous, current) >= changed_pixel_fraction
+
+
+def _visual_change_fraction(previous: np.ndarray, current: np.ndarray) -> float:
+    """Return the fraction of pixels that changed by a visible amount."""
     if previous.shape != current.shape:
-        return True
+        return 1.0
     difference = np.max(
         np.abs(current.astype(np.int16) - previous.astype(np.int16)),
         axis=2,
     )
-    changed = float(np.count_nonzero(difference > 32)) / float(difference.size)
-    return changed >= changed_pixel_fraction
+    return float(np.count_nonzero(difference > 32)) / float(difference.size)
 
 
 def _image_evidence(images: tuple[bytes, ...]) -> list[dict[str, object]]:
