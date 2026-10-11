@@ -292,7 +292,8 @@ class FourSwordsVisualTargetNavigator:
                             self.cleared_return_players.add(player)
                     plans[player] = _forward_exploration_step(rgb, position)
                     continue
-                if marked_grid is None:
+                confirmed_grid = visible_grid if self.probe_reached else marked_grid
+                if confirmed_grid is None:
                     teammate_step = _visible_reached_teammate_step(
                         rgb,
                         player,
@@ -304,12 +305,16 @@ class FourSwordsVisualTargetNavigator:
                         continue
                     plans[player] = _forward_exploration_step(rgb, position)
                     continue
-                if player != 1 and not _scout_occupies_grid(rgb, marked_grid):
+                if (
+                    player != 1
+                    and not self.probe_reached
+                    and not _scout_occupies_grid(rgb, confirmed_grid)
+                ):
                     plans[player] = _forward_exploration_step(rgb, position)
                     continue
                 self.leaving_return_players.discard(player)
                 self.forward_grid_players.add(player)
-                grid = marked_grid
+                grid = confirmed_grid
             else:
                 grid = visible_grid if player in self.forward_grid_players else None
             if player in self.reached_players:

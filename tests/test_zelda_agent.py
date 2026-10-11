@@ -425,6 +425,43 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
     assert all(player in navigator.leaving_return_players for player in (2, 3))
 
 
+def test_followers_accept_first_grid_after_a_confirmed_scout_probe() -> None:
+    navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
+
+    def frame(with_grid: bool, index: int) -> RawFrame:
+        rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+        if with_grid:
+            for x, y in ((70, 40), (120, 40), (70, 88), (120, 88)):
+                rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
+                rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        packed = (
+            ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (rgb[:, :, 2].astype(np.uint16) >> 3)
+        )
+        return RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=240,
+            height=160,
+            pitch=480,
+            index=index,
+        )
+
+    blank = frame(False, 0)
+    grid = frame(True, 1)
+    navigator("reach_warps", (blank,) * 4)
+    navigator("reach_warps", (blank,) * 4)
+
+    plans = navigator("reach_warps", (grid,) * 4)
+
+    assert 2 in navigator.forward_grid_players
+    assert 3 in navigator.forward_grid_players
+    assert 2 not in navigator.leaving_return_players
+    assert 3 not in navigator.leaving_return_players
+    assert plans[2] != ("move_up",)
+    assert plans[3] != ("move_up",)
+
+
 def test_visible_reached_teammate_ignores_a_false_colour_match() -> None:
     rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
 
