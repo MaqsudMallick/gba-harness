@@ -133,12 +133,16 @@ def test_four_swords_npc_adjacent_uses_p2_visible_pixels() -> None:
 
 
 def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
-    def view(target_y: int) -> RawFrame:
+    def view(target_y: int, *, activate: bool = False) -> RawFrame:
         current = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
         for x in (72, 120):
             for y in (target_y, target_y + 48):
                 current[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
                 current[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        if activate:
+            y = target_y + 48
+            current[y - 15 : y + 16, 105:136] = (173, 219, 255)
+            current[y - 9 : y + 10, 111:130] = (255, 251, 255)
         packed = (
             ((current[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((current[:, :, 1].astype(np.uint16) >> 2) << 5)
@@ -157,7 +161,7 @@ def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
         "probe_target", (far, far, far, far)
     ) == {1: ("move_up",)}
 
-    near = view(40)
+    near = view(40, activate=True)
     assert four_swords_visual_target_plan(
         "probe_target", (near, near, near, near)
     ) == {1: ("wait",)}
@@ -339,7 +343,7 @@ def test_visual_target_navigator_keeps_p2_on_a_covered_probe_target() -> None:
 
     assert navigator("probe_target", views(((140, 88),))) == {1: ("move_up",)}
     inactive = ((72, 40), (120, 40), (72, 88), (120, 88))
-    assert navigator("probe_target", views(inactive)) == {1: ("wait",)}
+    assert navigator("probe_target", views(inactive)) == {1: ("micro_down",)}
     active = ((72, 40), (120, 40), (72, 88))
     assert navigator.probe_target_reached(views(active, ((120, 88),)))
     assert navigator("probe_target", views(active, ((120, 88),))) == {1: ("wait",)}

@@ -26,6 +26,10 @@ ZELDA_ACTIONS: Final[dict[str, Action]] = {
     "nudge_down": hold("down", 5),
     "nudge_left": hold("left", 5),
     "nudge_right": hold("right", 5),
+    "micro_up": hold("up", 2),
+    "micro_down": hold("down", 2),
+    "micro_left": hold("left", 2),
+    "micro_right": hold("right", 2),
     "face_up": tap("up", hold_frames=2, gap_frames=2),
     "face_down": tap("down", hold_frames=2, gap_frames=2),
     "face_left": tap("left", hold_frames=2, gap_frames=2),
@@ -50,6 +54,10 @@ ZELDA_ACTION_DESCRIPTIONS: Final[dict[str, str]] = {
     "nudge_down": "Move south by one fine positioning step.",
     "nudge_left": "Move west by one fine positioning step.",
     "nudge_right": "Move east by one fine positioning step.",
+    "micro_up": "Move north by one minimal positioning step.",
+    "micro_down": "Move south by one minimal positioning step.",
+    "micro_left": "Move west by one minimal positioning step.",
+    "micro_right": "Move east by one minimal positioning step.",
     "face_up": "Face north with a minimal direction tap.",
     "face_down": "Face south with a minimal direction tap.",
     "face_left": "Face west with a minimal direction tap.",
@@ -176,9 +184,13 @@ def four_swords_visual_target_plan(
 
     player = _link_position(rgb, 1) or (120, 88)
     target = grid[3]
-    if _squared_distance(player, target) <= 6 * 6:
+    if any(
+        _squared_distance(player, active) <= 12 * 12
+        and _squared_distance(target, active) <= 12 * 12
+        for active in _active_target_centres(rgb)
+    ):
         return {1: ("wait",)}
-    return {1: _single_route_step(player, target)}
+    return {1: _precision_route_step(player, target)}
 
 
 def four_swords_probe_target_reached(views: tuple[RawFrame, ...]) -> bool:
@@ -287,8 +299,6 @@ class FourSwordsVisualTargetNavigator:
             for active in _active_target_centres(rgb)
         ):
             self.probe_reached = True
-            return {1: ("wait",)}
-        if _squared_distance(position, target) <= 6 * 6:
             return {1: ("wait",)}
         return {1: _precision_route_step(position, target)}
 
@@ -413,7 +423,15 @@ def _precision_route_step(
     """Use a short direction tap near a target to prevent overshoot."""
     dx = target[0] - player[0]
     dy = target[1] - player[1]
-    prefix = "nudge" if dx * dx + dy * dy <= 28 * 28 else "move"
+    distance = dx * dx + dy * dy
+    if distance == 0:
+        return ("micro_down",)
+    if distance <= 10 * 10:
+        prefix = "micro"
+    elif distance <= 28 * 28:
+        prefix = "nudge"
+    else:
+        prefix = "move"
     if abs(dx) > abs(dy):
         return (f"{prefix}_{'right' if dx > 0 else 'left'}",)
     return (f"{prefix}_{'down' if dy > 0 else 'up'}",)
