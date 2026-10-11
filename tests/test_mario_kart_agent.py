@@ -25,9 +25,7 @@ def race_frame(center: int = 120, far_center: int | None = None) -> np.ndarray:
 def rgb565_frame(rgb: np.ndarray) -> RawFrame:
     pixels = rgb.astype(np.uint16)
     packed = (
-        ((pixels[:, :, 0] >> 3) << 11)
-        | ((pixels[:, :, 1] >> 2) << 5)
-        | (pixels[:, :, 2] >> 3)
+        ((pixels[:, :, 0] >> 3) << 11) | ((pixels[:, :, 1] >> 2) << 5) | (pixels[:, :, 2] >> 3)
     ).astype("<u2")
     height, width, _ = rgb.shape
     return RawFrame(packed.tobytes(), width, height, width * 2, 1)
@@ -53,8 +51,8 @@ def test_agent_accelerates_and_steers_toward_road() -> None:
         smoothed_heading=30,
     ).decide(race_frame(center=148), frame=0)
 
-    assert clockwise.buttons == {Button.A, Button.RIGHT}
-    assert counter_clockwise.buttons == {Button.A, Button.LEFT}
+    assert clockwise.buttons == {Button.A, Button.LEFT}
+    assert counter_clockwise.buttons == {Button.A, Button.RIGHT}
     assert clockwise.scene == counter_clockwise.scene == "off-road-recovery"
 
 
@@ -66,6 +64,14 @@ def test_agent_accelerates_while_waiting_for_race() -> None:
     assert Button.A in decision.buttons
     assert len(decision.buttons) == 2
     assert decision.scene == "recovering"
+
+
+def test_recovery_continues_the_last_visible_turn() -> None:
+    menu = np.full((160, 240, 3), (10, 180, 240), dtype=np.uint8)
+
+    decision = MarioKartVisionAgent(last_steer=Button.LEFT).decide(menu, frame=0)
+
+    assert decision.buttons == {Button.A, Button.LEFT}
 
 
 def test_autonomous_player_crops_assigned_view_and_caches_decisions() -> None:
@@ -115,8 +121,27 @@ def test_wrong_way_recovery_keeps_accelerating_on_a_bend() -> None:
     frame[35:48, 80:175] = (230, 20, 20)
     frame[48:64, 80:175] = (245, 245, 245)
 
-    decision = MarioKartVisionAgent().decide(frame, frame=8)
+    agent = MarioKartVisionAgent()
+    decision = agent.decide(frame, frame=8)
 
     assert observe_mario_kart(frame).reverse
     assert decision.scene == "reverse-recovery"
     assert Button.A in decision.buttons
+
+    # The banner flashes, so recovery must remain active on an intervening frame
+    # where the red REVERSE text is not rendered.
+    following = agent.decide(race_frame(center=150, far_center=92), frame=9)
+    assert following.scene == "reverse-recovery"
+
+
+def test_agent_realigns_when_crossing_road_sideways() -> None:
+    frame = np.full((160, 240, 3), (20, 190, 35), dtype=np.uint8)
+    frame[:82] = (80, 175, 245)
+    frame[82:154] = (132, 132, 132)
+    agent = MarioKartVisionAgent(last_steer=Button.LEFT, needs_realign=True)
+
+    decision = agent.decide(frame, frame=0)
+
+    assert observe_mario_kart(frame).perspective_expansion == 1.0
+    assert decision.scene == "road-realignment"
+    assert decision.buttons == {Button.A, Button.LEFT}

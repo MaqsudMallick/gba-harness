@@ -109,12 +109,13 @@ def main(argv: list[str] | None = None) -> int:
     core = find_multiplayer_core(args.core)
     latch = FrameLatch()
 
-    with LibretroMultiplayerPort(
+    port = LibretroMultiplayerPort(
         rom,
         players=args.players,
         core=core,
         frame_sink=latch.sink,
-    ) as port:
+    )
+    with port:
         port.start_linked_session()
         linked = LinkedSession(port, max_step_frames=1800)
         if args.mario_kart_lobby or args.quick_race:
@@ -135,11 +136,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.headless:
             for _ in range(args.max_frames or 600):
-                inputs: dict[int, object] = {}
+                headless_inputs: dict[int, object] = {}
                 if autonomous is not None:
                     decision = autonomous.update(latch.require(), linked.frame)
-                    inputs[autonomous.player] = decision.buttons
-                if linked.step(inputs, 1).emulation_ended:
+                    headless_inputs[autonomous.player] = decision.buttons
+                if linked.step(headless_inputs, 1).emulation_ended:
                     break
             _save_screenshot(latch, args.screenshot)
             print(
@@ -157,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     ) or 'none'}"
                 )
+                if autonomous.last_decision.note:
+                    print(f"agent note: {autonomous.last_decision.note}")
             return 0
 
         pygame.init()

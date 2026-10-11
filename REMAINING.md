@@ -12,8 +12,9 @@ in this file.
 - [x] Verify Mario Kart: Super Circuit reaches a genuine `2P` linked lobby.
 - [x] Add a modular Player 2 visual steering/throttle agent, automatic quick-race setup,
       live agent/input status, and off-road/reverse recovery for Mario Kart.
-- [ ] Tune and record one complete verified Mario Kart race finish; the current local
-      controller drives and rejoins the road but is not yet reliable for all three laps.
+- [x] Complete a verified three-lap Mario Kart race using the local visual controller.
+      Deterministic headless evaluation finished Peach Circuit in `5:46.75` with lap
+      times `2:22.21`, `1:56.77`, and `1:27.77`.
 - [ ] Add match telemetry: per-player decisions, recovery, lap/progress, finish order, and
       a Neatlogs trace that makes the competition inspectable.
 - [ ] Add gamepad bindings for human P3/P4; the backend already exposes four controller

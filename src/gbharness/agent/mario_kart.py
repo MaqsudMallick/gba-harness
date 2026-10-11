@@ -12,7 +12,7 @@ from gbharness.buttons import Button
 from gbharness.multiplayer import LinkedSession
 
 KART_X = 120
-ROAD_AIM_X = 140
+ROAD_AIM_X = KART_X
 ROAD_SCAN_ROWS = (90, 102, 114, 126)
 ROAD_X_MIN = 36
 ROAD_X_MAX = 188
@@ -76,6 +76,7 @@ class MarioKartObservation:
     far_center: float | None
     heading: float | None
     road_width: int
+    perspective_expansion: float
     confidence: float
     on_road: bool
     grass_fraction: float
@@ -130,14 +131,17 @@ def _surface_cues(pixels: np.ndarray) -> tuple[float, bool]:
         & (near_surface[:, :, 1] > near_surface[:, :, 2] * 1.08)
         & (near_surface[:, :, 1] > 110)
     )
-    reverse_region = pixels[35:85, 80:175]
+    # The banner is only ten text pixels high at native resolution.  Its red title
+    # sits around y=30, above the white sign body; the previous y=35 crop discarded
+    # most of the word and missed visible wrong-way warnings.
+    reverse_region = pixels[20:70, 70:180]
     reverse_red = (
         (reverse_region[:, :, 0] > 180)
         & (reverse_region[:, :, 1] < 110)
         & (reverse_region[:, :, 2] < 110)
     )
     reverse_white = np.all(reverse_region > 220, axis=2)
-    reverse = int(reverse_red.sum()) > 197 and int(reverse_white.sum()) > 300
+    reverse = int(reverse_red.sum()) > 200 and int(reverse_white.sum()) > 500
     return float(grass.mean()), reverse
 
 
@@ -176,6 +180,7 @@ def observe_mario_kart(rgb: np.ndarray) -> MarioKartObservation:
             None,
             0,
             0.0,
+            0.0,
             False,
             grass_fraction,
             reverse,
@@ -187,6 +192,9 @@ def observe_mario_kart(rgb: np.ndarray) -> MarioKartObservation:
     far_center = float(np.average([sample[1] for sample in far]))
     heading = far_center - near_center
     width = max(sample[2] for sample in samples)
+    far_width = float(np.average([sample[2] for sample in far]))
+    near_width = float(np.average([sample[2] for sample in near]))
+    perspective_expansion = near_width / max(1.0, far_width)
     confidence = min(1.0, len(samples) / len(ROAD_SCAN_ROWS) * width / 95)
     on_road_votes = sum(start <= KART_X <= end for _, _, _, start, end in near)
     return MarioKartObservation(
@@ -195,6 +203,7 @@ def observe_mario_kart(rgb: np.ndarray) -> MarioKartObservation:
         far_center,
         heading,
         width,
+        perspective_expansion,
         confidence,
         on_road_votes >= 1 and grass_fraction < 0.28,
         grass_fraction,
@@ -212,6 +221,7 @@ class MarioKartVisionAgent:
     off_road_escape_threshold: int = 210
     reverse_escape_frames: int = 42
     forward_escape_frames: int = 66
+    reverse_hold_frames: int = 8
     motion_threshold: float = 0.9
     smoothed_center: float = ROAD_AIM_X
     smoothed_heading: float = 0.0
@@ -222,10 +232,12 @@ class MarioKartVisionAgent:
     off_road_frames: int = 0
     stalled_frames: int = 0
     seen_track: bool = False
+    needs_realign: bool = False
     escape_stage: str | None = None
     escape_frames_left: int = 0
     escape_steer: Button = Button.LEFT
     escape_attempts: int = 0
+    wrong_way_frames: int = 0
     previous_probe: np.ndarray | None = field(default=None, init=False, repr=False)
     last_motion: float = field(default=0.0, init=False)
     name: str = field(default="mario-kart-local-vision", init=False)
@@ -240,10 +252,12 @@ class MarioKartVisionAgent:
         self.off_road_frames = 0
         self.stalled_frames = 0
         self.seen_track = False
+        self.needs_realign = False
         self.escape_stage = None
         self.escape_frames_left = 0
         self.escape_steer = Button.LEFT
         self.escape_attempts = 0
+        self.wrong_way_frames = 0
         self.previous_probe = None
         self.last_motion = 0.0
 
@@ -302,16 +316,26 @@ class MarioKartVisionAgent:
     def decide(self, rgb: np.ndarray, frame: int) -> PlayerDecision:
         observation = observe_mario_kart(rgb)
         motion = self._measure_motion(rgb)
+        if observation.reverse:
+            self.wrong_way_frames = self.reverse_hold_frames
+        elif self.wrong_way_frames > 0:
+            self.wrong_way_frames = max(
+                0, self.wrong_way_frames - self.decision_interval
+            )
 
         if observation.on_road:
             self.seen_track = True
             self.off_road_frames = 0
             self.stalled_frames = 0
+            if observation.perspective_expansion >= 1.2:
+                self.needs_realign = False
             # Once the wheels are visibly back on asphalt, immediately hand control
             # back to the normal road follower instead of finishing an obsolete turn.
             self.escape_stage = None
         elif observation.racing or observation.grass_fraction > 0.2:
             self.off_road_frames += self.decision_interval
+            if self.off_road_frames >= 15 and observation.grass_fraction >= 0.28:
+                self.needs_realign = True
             if motion < self.motion_threshold:
                 self.stalled_frames += self.decision_interval
             else:
@@ -345,11 +369,14 @@ class MarioKartVisionAgent:
             self.previous_error = lateral_error
             control = lateral_error + self.smoothed_heading + derivative * 0.35
 
-            if observation.reverse:
-                recovery_target = observation.far_center or observation.road_center
-                control = recovery_target - ROAD_AIM_X
-                if abs(control) < self.dead_zone:
-                    control = -30 if self.last_steer == Button.LEFT else 30
+            if self.wrong_way_frames > 0:
+                if self.last_steer == Button.LEFT:
+                    control = -30
+                elif self.last_steer == Button.RIGHT:
+                    control = 30
+                else:
+                    recovery_target = observation.far_center or observation.road_center
+                    control = recovery_target - ROAD_AIM_X
                 scene = "reverse-recovery"
                 duty = 8
             elif not observation.on_road:
@@ -357,6 +384,14 @@ class MarioKartVisionAgent:
                 control = recovery_target - ROAD_AIM_X
                 scene = "off-road-recovery"
                 duty = 8
+            elif self.needs_realign and observation.perspective_expansion < 1.2:
+                # When road width does not grow toward the bottom of the screen, the
+                # kart is crossing the course sideways. Continue the turn that brought
+                # it back instead of driving straight across and into the far grass.
+                realign = self.last_steer or Button.LEFT
+                control = -30 if realign == Button.LEFT else 30
+                scene = "road-realignment"
+                duty = 10
             else:
                 scene = "race"
                 magnitude = abs(control)
@@ -371,12 +406,18 @@ class MarioKartVisionAgent:
                     if magnitude < 55
                     else 4
                 )
-                if abs(self.smoothed_heading) >= 30:
+                # A bend must trigger immediately. Using the smoothed heading here
+                # delayed turn-in by several frames and put the kart on the grass
+                # before steering reached full duty.
+                if abs(observation.heading) >= 28:
                     duty = max(duty, 8)
-                elif abs(self.smoothed_heading) >= 18:
+                elif abs(observation.heading) >= 16:
                     duty = max(duty, 5)
 
-            steer = Button.RIGHT if control < 0 else Button.LEFT
+            # Screen-space control has the same sign as the desired wheel input:
+            # road left of the kart means steer LEFT, and vice versa.  Reversing this
+            # mapping made the kart drive toward the outside of every visible bend.
+            steer = Button.LEFT if control < 0 else Button.RIGHT
             phase = (frame // self.decision_interval) % 12
             # Digital steering at full throttle is extremely twitchy in Super Circuit.
             # Lift for half of each control cycle on a visible bend, like a human easing
@@ -398,15 +439,16 @@ class MarioKartVisionAgent:
                     f"near={observation.road_center:.1f}, "
                     f"heading={observation.heading:+.1f}, control={control:+.1f}, "
                     f"duty={duty}/12, grass={observation.grass_fraction:.2f}, "
+                    f"perspective={observation.perspective_expansion:.2f}, "
                     f"confidence={observation.confidence:.2f}"
                 ),
             )
 
         if self.lost_frames == 0:
             if self.last_steer == Button.LEFT:
-                self.recovery_steer = Button.RIGHT
-            elif self.last_steer == Button.RIGHT:
                 self.recovery_steer = Button.LEFT
+            elif self.last_steer == Button.RIGHT:
+                self.recovery_steer = Button.RIGHT
         self.lost_frames += self.decision_interval
         if self.recovery_steer is None:
             phase = (frame // 90) % 2
