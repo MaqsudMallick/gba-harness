@@ -360,7 +360,7 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
     third = navigator("reach_warps", (blank_view,) * 4)
     rejected_return = navigator("reach_warps", (return_view,) * 4)
 
-    assert first == {1: ("move_up",), 2: ("move_up",), 3: ("move_up",)}
+    assert first == {1: ("move_up",), 2: ("wait",), 3: ("wait",)}
     assert second == first
     assert third == first
     assert rejected_return == first
@@ -368,8 +368,9 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
 
     forward = navigator("reach_warps", (forward_view,) * 4)
 
-    assert forward != first
-    assert all(player not in navigator.leaving_return_players for player in (1, 2, 3))
+    assert forward[1] != first[1]
+    assert 1 not in navigator.leaving_return_players
+    assert all(player in navigator.leaving_return_players for player in (2, 3))
 
 
 def test_visible_reached_teammate_ignores_a_false_colour_match() -> None:

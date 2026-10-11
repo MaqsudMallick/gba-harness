@@ -269,6 +269,9 @@ class FourSwordsVisualTargetNavigator:
                 active_targets,
             )
             if player in self.leaving_return_players:
+                if player != 1 and 1 not in self.reached_players:
+                    plans[player] = ("wait",)
+                    continue
                 portal_visible = len(visible_targets) >= 2
                 if player not in self.cleared_return_players:
                     if portal_visible:
@@ -281,6 +284,18 @@ class FourSwordsVisualTargetNavigator:
                     plans[player] = _forward_exploration_step(rgb, position)
                     continue
                 if marked_grid is None:
+                    teammate_step = _visible_reached_teammate_step(
+                        rgb,
+                        player,
+                        position,
+                        self.reached_players,
+                    )
+                    if teammate_step is not None:
+                        plans[player] = teammate_step
+                        continue
+                    plans[player] = _forward_exploration_step(rgb, position)
+                    continue
+                if player != 1 and not _scout_occupies_grid(rgb, marked_grid):
                     plans[player] = _forward_exploration_step(rgb, position)
                     continue
                 self.leaving_return_players.discard(player)
@@ -564,6 +579,22 @@ def _visible_reached_teammate_step(
     return _precision_route_step(position, target)
 
 
+def _scout_occupies_grid(
+    rgb: np.ndarray,
+    grid: tuple[tuple[int, int], ...],
+) -> bool:
+    """Confirm that the red P2 scout occupies this visible portal grid."""
+    scout = _link_position(rgb, 1)
+    if scout is None:
+        return False
+    active_targets = _active_target_centres(rgb)
+    return any(
+        _squared_distance(scout, target) <= 18 * 18
+        and any(_squared_distance(target, active) <= 12 * 12 for active in active_targets)
+        for target in grid
+    )
+
+
 def _partial_portal_target(
     rgb: np.ndarray,
     slot: int,
@@ -697,9 +728,7 @@ def _empty_target_slot(
         return own_slot
 
     available = [
-        slot
-        for slot in range(len(grid))
-        if slot not in active_slots and slot not in reserved_slots
+        slot for slot in range(len(grid)) if slot not in active_slots and slot not in reserved_slots
     ]
     if preferred_slot in available:
         return preferred_slot
