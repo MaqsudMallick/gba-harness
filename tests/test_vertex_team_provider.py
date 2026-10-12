@@ -274,6 +274,7 @@ def test_post_portal_room_allows_visible_combat_actions() -> None:
             "stage": "explore_room",
             "objective": "clear each lane",
             "room_map": "Four separate lanes contain visible targets.",
+            "exploration_status": "target_confirmed",
             "human_plan": ["move_down"],
             "player_1_target": "P1 target in the left lane",
             "player_2_target": "P2 target in the second lane",
@@ -328,6 +329,7 @@ def test_parallel_lanes_can_use_the_same_direction() -> None:
             "stage": "explore_room",
             "objective": "reach one visible target in each lane",
             "room_map": "Each Link is in a separate vertical lane.",
+            "exploration_status": "target_confirmed",
             "human_plan": ["move_down"],
             "player_1_target": "left lane target",
             "player_2_target": "second lane target",
@@ -361,3 +363,45 @@ def test_parallel_lanes_can_use_the_same_direction() -> None:
         2: ("move_down",),
         3: ("move_down",),
     }
+
+
+def test_explore_room_holds_followers_while_scouting() -> None:
+    models = FakeModels(
+        {
+            "scene": "separate lanes and a solid wall",
+            "stage": "explore_room",
+            "objective": "inspect the reachable lane",
+            "room_map": "P2 has a visible collectible above a solid wall.",
+            "exploration_status": "scouting",
+            "human_plan": ["wait"],
+            "player_1_target": "hold position",
+            "player_2_target": "visible collectible",
+            "player_3_target": "hold position",
+            "player_4_target": "hold position",
+            "player_2_plan": ["move_up"],
+            "player_3_plan": ["move_down"],
+            "player_4_plan": ["move_down"],
+            "replan_trigger": "P2 reaches the collectible",
+            "confidence": 0.9,
+            "terminal": False,
+            "note": "P2 scouts the lane.",
+        }
+    )
+    team = VertexTeamDecisionProvider((provider("gemini", models),), navigation_only=True)
+    request = TeamDecisionRequest(
+        goal="solve the visible room",
+        state="new room",
+        image_png=b"composite",
+        actions=(
+            ActionOption("move_up", "up"),
+            ActionOption("move_down", "down"),
+            ActionOption("wait", "wait"),
+        ),
+        ai_players=(1, 2, 3),
+        turn=1,
+        stage="explore_room",
+    )
+
+    decision = team.decide_team(request)
+
+    assert decision.plans == {1: ("move_up",), 2: ("wait",), 3: ("wait",)}

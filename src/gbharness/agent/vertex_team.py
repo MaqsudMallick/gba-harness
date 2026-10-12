@@ -131,6 +131,11 @@ class VertexTeamDecisionProvider:
                 {
                     "room_map": {"type": "string"},
                     "replan_trigger": {"type": "string"},
+                    "exploration_status": {
+                        "type": "string",
+                        "enum": ["scouting", "target_confirmed"],
+                        "description": "Use scouting until P2 produces visible target evidence.",
+                    },
                     "human_plan": {
                         "type": "array",
                         "items": {"type": "string", "enum": human_allowed},
@@ -155,6 +160,7 @@ class VertexTeamDecisionProvider:
             common_required.extend(
                 [
                     "room_map",
+                    "exploration_status",
                     "human_plan",
                     "player_1_target",
                     *explore_target_keys,
@@ -233,11 +239,16 @@ class VertexTeamDecisionProvider:
                     "shows that the room objective is complete. Do not use a walkthrough. "
                     "A two-by-two group of four large circles with a centre character or "
                     "symbol is a warp grid, not a pressure-plate puzzle. Do not return "
-                    "through the entrance portal. If the route is uncertain, choose one AI "
-                    "Link as the scout. Keep the other two AI Links still. Move another bot "
-                    "only after the scout confirms an opening, NPC, obstacle, or target. "
-                    "Keep visible teammates in the same mapped area. At the start of an "
-                    "unexplored room, use P2 as the scout. If a visible non-Link figure "
+                    "through the entrance portal. Start each unexplored room with "
+                    "exploration_status=scouting. P2 is the only moving AI Link during "
+                    "scouting. P3 and P4 must return only wait. Set "
+                    "exploration_status=target_confirmed only after the screenshot shows a "
+                    "result from P2: an opening, dialogue, a changed object, a collected item, "
+                    "or a confirmed obstacle response. Keep visible teammates in the same "
+                    "mapped area. At the start of an unexplored room, use P2 as the scout. "
+                    "If a solid wall or ledge spans the scout direction, it is not an exit. "
+                    "Do not move into it. Select one untested visible object or free lane "
+                    "segment on the reachable side of that barrier. If a visible non-Link figure "
                     "can be a character and is not fixed at the centre of a blue warp tile, "
                     "approach it with P2, face it, and use interact once before the team "
                     "moves past it. If dialogue opens, read every visible page and preserve "
@@ -366,6 +377,13 @@ class VertexTeamDecisionProvider:
         plans: dict[int, tuple[str, ...]] = {}
         for player in request.ai_players:
             plan = _action_plan(payload.get(f"player_{player + 1}_plan"), allowed, player + 1)
+            if (
+                self.navigation_only
+                and request.stage == "explore_room"
+                and str(payload.get("exploration_status", "scouting")) != "target_confirmed"
+                and player != npc_actor
+            ):
+                plan = ("wait",)
             if (
                 self.navigation_only
                 and stage in {"reach_npc", "advance_dialogue"}
