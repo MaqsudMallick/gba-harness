@@ -33,6 +33,7 @@ from gbharness.agent import (
     four_swords_dialogue_visible,
     four_swords_gameplay_visible,
     four_swords_npc_adjacent,
+    four_swords_player_position,
     solve_first_training_puzzle,
 )
 from gbharness.backends import LibretroMultiplayerPort, find_multiplayer_core, validate_rom
@@ -83,6 +84,11 @@ def parser() -> argparse.ArgumentParser:
         "--autoplay-human-portal",
         action="store_true",
         help="move P1 to the free portal pad after all three bots form one group",
+    )
+    result.add_argument(
+        "--autoplay-human-plan",
+        action="store_true",
+        help="execute the team captain's P1 plan during unattended room validation",
     )
     result.add_argument(
         "--complete-after-room-transition",
@@ -262,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                         max_model_calls=args.max_model_calls,
                         confidence_threshold=settings.confidence_threshold,
                         max_consecutive_errors=args.max_consecutive_errors,
-                        autoplay_human_dialogue=False,
+                        autoplay_human_dialogue=args.autoplay_human_plan,
                         continue_after_team_target=bool(
                             human_player and target_navigator is not None
                         ),
@@ -283,6 +289,9 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     npc_reached_detector=(four_swords_npc_adjacent if args.npc_autopilot else None),
                     visual_plan_override=target_navigator,
+                    player_position_detector=(
+                        four_swords_player_position if args.npc_autopilot else None
+                    ),
                     probe_target_detector=(
                         target_navigator.probe_target_reached
                         if target_navigator is not None
@@ -519,7 +528,7 @@ def _run_live(
     runner.on_stage_change = lambda message: phase.__setitem__(0, message)
 
     def keep_human_active(_episode: LinkedEpisodeResult) -> None:
-        if runner.config.complete_after_room_transition:
+        if runner.config.complete_after_room_transition or _episode.status == "completed":
             return
         if human_actions is None or not human_player:
             return
@@ -614,7 +623,10 @@ def _run_live(
 
             record = latest[0]
             complete = not worker.is_alive()
-            if complete and runner.config.complete_after_room_transition:
+            if complete and (
+                runner.config.complete_after_room_transition
+                or bool(outcome and outcome[0].status == "completed")
+            ):
                 running = False
             header = "RUN FINISHED — press Esc to close" if complete else phase[0]
             lines = [header]

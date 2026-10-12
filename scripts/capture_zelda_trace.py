@@ -183,6 +183,8 @@ def main() -> int:
             "--live",
             "--skip-first-puzzle",
             "--npc-autopilot",
+            "--autoplay-human-portal",
+            "--autoplay-human-plan",
             "--max-turns",
             str(args.max_turns),
             "--max-model-calls",

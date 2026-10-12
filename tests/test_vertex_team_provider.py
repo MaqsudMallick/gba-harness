@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
+
+from PIL import Image
 
 import gbharness.agent.vertex_team as vertex_team
 from gbharness.agent.contracts import ActionOption
@@ -44,6 +47,12 @@ def provider(model: str, models: FakeModels) -> VertexDecisionProvider:
         model=model,
         client=SimpleNamespace(models=models),
     )
+
+
+def blank_png() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (240, 160)).save(output, format="PNG")
+    return output.getvalue()
 
 
 def test_vertex_team_provider_retries_one_transient_failure(monkeypatch: Any) -> None:
@@ -244,6 +253,7 @@ def test_navigation_mode_waits_for_visible_dialogue_text() -> None:
             ActionOption("move_down", "down"),
             ActionOption("face_right", "face right"),
             ActionOption("interact", "interact"),
+            ActionOption("advance_text", "advance text"),
             ActionOption("wait", "wait"),
         ),
         ai_players=(1, 2, 3),
@@ -256,7 +266,7 @@ def test_navigation_mode_waits_for_visible_dialogue_text() -> None:
     assert decision.stage == "advance_dialogue"
     assert decision.human_plan == ()
     assert decision.plans[1] == (
-        "interact",
+        "advance_text",
         "wait",
         "wait",
         "wait",
@@ -275,6 +285,10 @@ def test_post_portal_room_allows_visible_combat_actions() -> None:
             "objective": "clear each lane",
             "room_map": "Four separate lanes contain visible targets.",
             "exploration_status": "target_confirmed",
+            "npc_status": "all_visible_npcs_checked",
+            "visible_npc_count": 2,
+            "checked_npc_count": 2,
+            "dialogue_visible": False,
             "human_plan": ["move_down"],
             "player_1_target": "P1 target in the left lane",
             "player_2_target": "P2 target in the second lane",
@@ -330,6 +344,10 @@ def test_parallel_lanes_can_use_the_same_direction() -> None:
             "objective": "reach one visible target in each lane",
             "room_map": "Each Link is in a separate vertical lane.",
             "exploration_status": "target_confirmed",
+            "npc_status": "all_visible_npcs_checked",
+            "visible_npc_count": 2,
+            "checked_npc_count": 2,
+            "dialogue_visible": False,
             "human_plan": ["move_down"],
             "player_1_target": "left lane target",
             "player_2_target": "second lane target",
@@ -373,6 +391,10 @@ def test_explore_room_holds_followers_while_scouting() -> None:
             "objective": "inspect the reachable lane",
             "room_map": "P2 has a visible collectible above a solid wall.",
             "exploration_status": "scouting",
+            "npc_status": "searching",
+            "visible_npc_count": 2,
+            "checked_npc_count": 0,
+            "dialogue_visible": False,
             "human_plan": ["wait"],
             "player_1_target": "hold position",
             "player_2_target": "visible collectible",
@@ -399,9 +421,116 @@ def test_explore_room_holds_followers_while_scouting() -> None:
         ),
         ai_players=(1, 2, 3),
         turn=1,
+        player_images=(blank_png(), blank_png(), blank_png(), blank_png()),
         stage="explore_room",
     )
 
     decision = team.decide_team(request)
 
     assert decision.plans == {1: ("move_up",), 2: ("wait",), 3: ("wait",)}
+    assert models.kwargs["contents"][1].inline_data.data == request.player_images[1]
+    assert "P2 is the red Link" in models.kwargs["contents"][0]
+
+
+def test_explore_room_finishes_npc_dialogue_before_team_actions() -> None:
+    models = FakeModels(
+        {
+            "scene": "P2 has an open NPC dialogue box",
+            "stage": "explore_room",
+            "objective": "finish all visible NPC dialogue",
+            "room_map": "The right NPC is active. Two other NPCs remain unchecked.",
+            "exploration_status": "target_confirmed",
+            "npc_status": "dialogue_active",
+            "visible_npc_count": 3,
+            "checked_npc_count": 1,
+            "dialogue_visible": True,
+            "human_plan": ["move_down"],
+            "player_1_target": "left switch",
+            "player_2_target": "right NPC",
+            "player_3_target": "centre switch",
+            "player_4_target": "right switch",
+            "player_2_plan": ["move_down"],
+            "player_3_plan": ["move_down"],
+            "player_4_plan": ["move_down"],
+            "replan_trigger": "the dialogue box closes",
+            "confidence": 0.9,
+            "terminal": True,
+            "note": "Finish the current NPC first.",
+        }
+    )
+    team = VertexTeamDecisionProvider((provider("gemini", models),), navigation_only=True)
+    request = TeamDecisionRequest(
+        goal="solve the visible room",
+        state="the team entered a new room",
+        image_png=b"composite",
+        actions=(
+            ActionOption("move_down", "down"),
+            ActionOption("advance_text", "advance text"),
+            ActionOption("wait", "wait"),
+        ),
+        ai_players=(1, 2, 3),
+        turn=1,
+        stage="explore_room",
+    )
+
+    decision = team.decide_team(request)
+
+    assert decision.human_plan == ("wait",)
+    assert decision.plans == {
+        1: ("advance_text", "wait", "wait", "wait", "wait", "wait"),
+        2: ("wait",),
+        3: ("wait",),
+    }
+    assert not any(item.terminal for item in decision.decisions.values())
+    schema = models.kwargs["config"].response_json_schema
+    assert "npc_status" in schema["required"]
+    assert "visible_npc_count" in schema["required"]
+    assert "checked_npc_count" in schema["required"]
+    assert "dialogue_visible" in schema["required"]
+    assert "including pink figures on blue tiles" in models.kwargs["contents"][0]
+
+
+def test_explore_room_blocks_attacks_until_npc_checks_finish() -> None:
+    models = FakeModels(
+        {
+            "scene": "P2 sees an unchecked pink NPC",
+            "stage": "explore_room",
+            "objective": "talk to the visible NPC",
+            "room_map": "One pink NPC remains unchecked on the upper tile.",
+            "exploration_status": "scouting",
+            "npc_status": "searching",
+            "visible_npc_count": 1,
+            "checked_npc_count": 0,
+            "dialogue_visible": False,
+            "human_plan": ["wait"],
+            "player_1_target": "hold position",
+            "player_2_target": "upper NPC",
+            "player_3_target": "hold position",
+            "player_4_target": "hold position",
+            "player_2_plan": ["attack_up", "use_sword"],
+            "player_3_plan": ["attack_up"],
+            "player_4_plan": ["use_sword"],
+            "replan_trigger": "P2 reaches the NPC",
+            "confidence": 0.9,
+            "terminal": False,
+            "note": "The NPC check is not complete.",
+        }
+    )
+    team = VertexTeamDecisionProvider((provider("gemini", models),), navigation_only=True)
+    request = TeamDecisionRequest(
+        goal="solve the visible room",
+        state="new room",
+        image_png=b"composite",
+        actions=(
+            ActionOption("attack_up", "attack up"),
+            ActionOption("use_sword", "use sword"),
+            ActionOption("wait", "wait"),
+        ),
+        ai_players=(1, 2, 3),
+        turn=1,
+        stage="explore_room",
+    )
+
+    decision = team.decide_team(request)
+
+    assert decision.plans == {1: ("wait", "wait"), 2: ("wait",), 3: ("wait",)}

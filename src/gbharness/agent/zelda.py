@@ -38,7 +38,8 @@ ZELDA_ACTIONS: Final[dict[str, Action]] = {
     "attack_down": hold(["down", "b"], 10),
     "attack_left": hold(["left", "b"], 10),
     "attack_right": hold(["right", "b"], 10),
-    "interact": tap("a", hold_frames=3, gap_frames=9),
+    "interact": tap("r", hold_frames=3, gap_frames=9),
+    "advance_text": tap("a", hold_frames=3, gap_frames=9),
     "use_sword": tap("b", hold_frames=3, gap_frames=9),
     "start": tap("start", hold_frames=3, gap_frames=12),
     "select": tap("select", hold_frames=3, gap_frames=12),
@@ -66,7 +67,8 @@ ZELDA_ACTION_DESCRIPTIONS: Final[dict[str, str]] = {
     "attack_down": "Face south, move briefly, and attack with B.",
     "attack_left": "Face west, move briefly, and attack with B.",
     "attack_right": "Face east, move briefly, and attack with B.",
-    "interact": "Tap A to confirm a menu choice, interact, lift, or use the A item.",
+    "interact": "Tap R to speak, interact, lift, or throw.",
+    "advance_text": "Tap A to advance or close visible dialogue text.",
     "use_sword": "Tap B to swing the sword or cancel a menu.",
     "start": "Tap Start to begin from a title/menu screen or open the pause screen.",
     "select": "Tap Select only when a menu visibly requires it.",
@@ -211,6 +213,8 @@ class FourSwordsVisualTargetNavigator:
     seeking_team_players: set[int] = field(default_factory=set)
     team_search_actions: dict[int, str] = field(default_factory=dict)
     group_mismatch_counts: dict[int, int] = field(default_factory=dict)
+    formation_confirmations: int = 0
+    formation_locked: bool = False
     reached_misses: dict[int, int] = field(default_factory=dict)
     return_grid_absent_counts: dict[int, int] = field(default_factory=dict)
     cleared_return_players: set[int] = field(default_factory=set)
@@ -219,6 +223,8 @@ class FourSwordsVisualTargetNavigator:
     active_frames: dict[int, int] = field(default_factory=dict)
     probe_reached: bool = False
     dialogue_attempts: int = 0
+    explore_dialogue_was_visible: bool = False
+    explore_npc_cooldown: int = 0
 
     def reset(self) -> None:
         """Clear first-room visual state before the team enters a new room."""
@@ -231,6 +237,8 @@ class FourSwordsVisualTargetNavigator:
         self.seeking_team_players.clear()
         self.team_search_actions.clear()
         self.group_mismatch_counts.clear()
+        self.formation_confirmations = 0
+        self.formation_locked = False
         self.reached_misses.clear()
         self.return_grid_absent_counts.clear()
         self.cleared_return_players.clear()
@@ -239,6 +247,8 @@ class FourSwordsVisualTargetNavigator:
         self.active_frames.clear()
         self.probe_reached = False
         self.dialogue_attempts = 0
+        self.explore_dialogue_was_visible = False
+        self.explore_npc_cooldown = 0
 
     def __call__(
         self,
@@ -343,7 +353,10 @@ class FourSwordsVisualTargetNavigator:
             else:
                 grid = visible_grid if player in self.forward_grid_players else None
             if player in self.reached_players:
-                if any(_squared_distance(position, active) <= 12 * 12 for active in active_targets):
+                if any(
+                    _squared_distance(position, active) <= 12 * 12
+                    for active in active_targets
+                ):
                     self.reached_misses[player] = 0
                     plans[player] = ("wait",)
                     continue
@@ -422,8 +435,36 @@ class FourSwordsVisualTargetNavigator:
         self,
         views: tuple[RawFrame, ...],
     ) -> dict[int, tuple[str, ...]]:
-        """Let the team model discover and plan the visible room."""
-        return {}
+        """Interact only when P2 is already beside a visible NPC."""
+        if len(views) < 2:
+            return {}
+        rgb = to_rgb(views[1])
+        if _private_dialogue_visible(rgb):
+            self.explore_dialogue_was_visible = True
+            return {1: ("advance_text", "wait", "wait", "wait", "wait", "wait")}
+        if self.explore_dialogue_was_visible:
+            self.explore_dialogue_was_visible = False
+            self.explore_npc_cooldown = 8
+            return {}
+        if self.explore_npc_cooldown:
+            self.explore_npc_cooldown -= 1
+            return {}
+
+        player = _link_position(rgb, 1)
+        npc = _pink_npc_position(rgb)
+        if (
+            player is None
+            or npc is None
+            or _squared_distance(player, npc) > 30 * 30
+        ):
+            return {}
+        dx = npc[0] - player[0]
+        dy = npc[1] - player[1]
+        if abs(dx) > abs(dy):
+            facing = "face_right" if dx > 0 else "face_left"
+        else:
+            facing = "face_down" if dy > 0 else "face_up"
+        return {1: (facing, "interact", "wait", "wait", "wait", "wait")}
 
     def _reach_npc_plan(
         self,
@@ -460,6 +501,8 @@ class FourSwordsVisualTargetNavigator:
             for active in _active_target_centres(rgb)
         ):
             self.probe_reached = True
+            self.assignments[1] = 3
+            self.tracked_targets[1] = target
             return {1: ("wait",)}
         return {1: _precision_route_step(position, target)}
 
@@ -472,7 +515,7 @@ class FourSwordsVisualTargetNavigator:
         rgb = to_rgb(views[1])
         if _private_dialogue_visible(rgb):
             self.dialogue_attempts = 0
-            return {1: ("interact", "wait", "wait", "wait", "wait", "wait")}
+            return {1: ("advance_text", "wait", "wait", "wait", "wait", "wait")}
 
         self.dialogue_attempts += 1
         if self.dialogue_attempts >= 3:
@@ -496,7 +539,39 @@ class FourSwordsVisualTargetNavigator:
 
     def all_assigned_players_reached(self, views: tuple[RawFrame, ...]) -> bool:
         """Confirm that P2 through P4 overlap their fixed visual targets."""
+        if self.formation_locked:
+            if self.assigned_players_still_reached(views):
+                return True
+            self.formation_locked = False
+            self.prepare_portal_repair(views)
+            return False
         plans = self("reach_warps", views)
+        view_rgbs = tuple(to_rgb(view) for view in views)
+        strong_group_views = sum(
+            _strongest_active_grid(rgb)[1] >= 3 for rgb in view_rgbs
+        )
+        visible_team_reached = all(
+            (slot := self.assignments.get(player)) is not None
+            and _player_on_assigned_target_in_views(
+                view_rgbs,
+                player,
+                slot,
+                minimum_occupancy=3,
+                require_scout_grid=player != 1,
+            )
+            for player in (1, 2, 3)
+        )
+        if all(plans.get(player) == ("wait",) for player in (1, 2, 3)) and (
+            strong_group_views >= 3
+        ) and visible_team_reached:
+            self.formation_confirmations += 1
+        else:
+            self.formation_confirmations = 0
+        if self.formation_confirmations >= 2:
+            self.formation_locked = True
+            self.reached_players.update((1, 2, 3))
+            self.group_mismatch_counts.clear()
+            return True
         individually_reached = self.reached_players == {1, 2, 3} and all(
             plans.get(player) == ("wait",) for player in (1, 2, 3)
         )
@@ -504,6 +579,7 @@ class FourSwordsVisualTargetNavigator:
             self.group_mismatch_counts.clear()
             return False
         if self.assigned_players_still_reached(views):
+            self.formation_locked = True
             self.group_mismatch_counts.clear()
             return True
         occupancies = {
@@ -512,7 +588,7 @@ class FourSwordsVisualTargetNavigator:
         }
         strongest_group = max(occupancies.values(), default=0)
         for player, occupancy in occupancies.items():
-            mismatch = strongest_group >= 2 and 0 < occupancy < strongest_group
+            mismatch = strongest_group >= 2 and occupancy < strongest_group
             self.group_mismatch_counts[player] = (
                 self.group_mismatch_counts.get(player, 0) + 1 if mismatch else 0
             )
@@ -526,10 +602,35 @@ class FourSwordsVisualTargetNavigator:
         """Confirm that each bot still overlaps an active portal target."""
         if len(views) < 4:
             return False
+        if self.formation_locked:
+            view_rgbs = tuple(to_rgb(view) for view in views)
+            strong_group_views = sum(
+                _strongest_active_grid(rgb)[1] >= 3 for rgb in view_rgbs
+            )
+            visible_team_reached = all(
+                (slot := self.assignments.get(player)) is not None
+                and _player_on_assigned_target_in_views(
+                    view_rgbs,
+                    player,
+                    slot,
+                    minimum_occupancy=2,
+                    require_scout_grid=player != 1,
+                )
+                for player in (1, 2, 3)
+            )
+            return strong_group_views >= 2 and visible_team_reached
         occupancies = tuple(
             _active_grid_occupancy(to_rgb(views[player]), player)
             for player in (1, 2, 3)
         )
+        if (
+            len(set(occupancies)) == 1
+            and all(
+                _player_on_active_target(to_rgb(views[player]), player)
+                for player in (1, 2, 3)
+            )
+        ):
+            return True
         return min(occupancies) >= 3
 
     def prepare_portal_repair(self, views: tuple[RawFrame, ...]) -> None:
@@ -543,11 +644,7 @@ class FourSwordsVisualTargetNavigator:
         strongest_group = max(occupancies.values(), default=0)
         for player in (1, 2, 3):
             on_target = occupancies[player] > 0
-            wrong_group = (
-                strongest_group >= 2
-                and occupancies[player] > 0
-                and occupancies[player] < strongest_group
-            )
+            wrong_group = strongest_group >= 2 and occupancies[player] < strongest_group
             if on_target and not wrong_group:
                 continue
             self.reached_players.discard(player)
@@ -594,10 +691,10 @@ class FourSwordsVisualTargetNavigator:
             )
             candidates.append((occupancy, -_squared_distance(position, centre), grid))
         if not candidates:
-            return "wait"
+            return "move_up"
         occupancy, _, grid = max(candidates, key=lambda candidate: candidate[:2])
         if occupancy < 3:
-            return "wait"
+            return "move_up"
         empty_targets = [
             target
             for target in grid
@@ -654,6 +751,67 @@ def _active_grid_occupancy(rgb: np.ndarray, player: int) -> int:
     return max(occupancies, default=0)
 
 
+def _player_on_active_target(
+    rgb: np.ndarray,
+    player: int,
+    target: tuple[int, int] | None = None,
+) -> bool:
+    """Detect player-color pixels inside an active target."""
+    position = _link_position(rgb, player)
+    if position is None:
+        return False
+    red = rgb[:, :, 0]
+    green = rgb[:, :, 1]
+    blue = rgb[:, :, 2]
+    if player == 1:
+        player_mask = (red > 165) & (green < 100) & (blue < 100)
+    elif player == 2:
+        player_mask = (
+            (blue > 105)
+            & (red < 115)
+            & (green < 175)
+            & (blue.astype(np.int16) > red.astype(np.int16) + 35)
+        )
+    elif player == 3:
+        player_mask = (red > 105) & (blue > 105) & (green < 125)
+    else:
+        return False
+    for active_x, active_y in _active_target_centres(rgb):
+        if target is not None and _squared_distance(target, (active_x, active_y)) > 12 * 12:
+            continue
+        if _squared_distance(position, (active_x, active_y)) > 18 * 18:
+            continue
+        region = player_mask[
+            max(0, active_y - 18) : min(rgb.shape[0], active_y + 19),
+            max(0, active_x - 18) : min(rgb.shape[1], active_x + 19),
+        ]
+        if int(np.count_nonzero(region)) >= 12:
+            return True
+    return False
+
+
+def _player_on_assigned_target_in_views(
+    view_rgbs: tuple[np.ndarray, ...],
+    player: int,
+    slot: int,
+    *,
+    minimum_occupancy: int,
+    require_scout_grid: bool = False,
+) -> bool:
+    """Confirm one Link on its assigned slot in a current visible grid."""
+    for rgb in view_rgbs:
+        if require_scout_grid:
+            grid = _scout_occupied_target_grid(rgb)
+            occupancy = _grid_active_occupancy(rgb, grid) if grid is not None else 0
+        else:
+            grid, occupancy = _strongest_active_grid(rgb)
+        if grid is None or occupancy < minimum_occupancy or slot >= len(grid):
+            continue
+        if _player_on_active_target(rgb, player, grid[slot]):
+            return True
+    return False
+
+
 def _strongest_active_grid(
     rgb: np.ndarray,
 ) -> tuple[tuple[tuple[int, int], ...] | None, int]:
@@ -674,6 +832,18 @@ def _strongest_active_grid(
         return None, 0
     occupancy, grid = max(candidates, key=lambda candidate: candidate[0])
     return grid, occupancy
+
+
+def _grid_active_occupancy(
+    rgb: np.ndarray,
+    grid: tuple[tuple[int, int], ...],
+) -> int:
+    """Count active pads in one portal grid."""
+    active_targets = _active_target_centres(rgb)
+    return sum(
+        any(_squared_distance(target, active) <= 12 * 12 for active in active_targets)
+        for target in grid
+    )
 
 
 def _visible_team_rejoin_step(
@@ -710,6 +880,19 @@ def _pink_npc_offset(rgb: np.ndarray) -> tuple[int, int] | None:
 
 def _pink_npc_position(rgb: np.ndarray) -> tuple[int, int] | None:
     """Find the upper pink NPC without selecting Purple Link."""
+    candidates = _pink_npc_positions(rgb)
+    if not candidates:
+        return None
+    player = _link_position(rgb, 1) or (120, 88)
+    return min(candidates, key=lambda point: _squared_distance(point, player))
+
+
+def four_swords_visible_npc_count(rgb: np.ndarray) -> int:
+    """Count visible pink NPC bodies without counting Purple Link."""
+    return len(_pink_npc_positions(rgb))
+
+
+def _pink_npc_positions(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
     region_x = 70
     region_y = 15
     nearby = rgb[region_y:150, region_x:171]
@@ -728,10 +911,7 @@ def _pink_npc_position(rgb: np.ndarray) -> tuple[int, int] | None:
         if not 55 <= len(xs) <= 180 or not 10 <= width <= 24 or not 8 <= height <= 28:
             continue
         candidates.append((int(np.mean(xs)) + region_x, int(np.mean(ys)) + region_y))
-    if not candidates:
-        return None
-    player = _link_position(rgb, 1) or (120, 88)
-    return min(candidates, key=lambda point: _squared_distance(point, player))
+    return tuple(candidates)
 
 
 def _route_step(
@@ -823,10 +1003,28 @@ def _scout_occupies_grid(
         return False
     active_targets = _active_target_centres(rgb)
     return any(
-        _squared_distance(scout, target) <= 18 * 18
+        _squared_distance(scout, target) <= 30 * 30
         and any(_squared_distance(target, active) <= 12 * 12 for active in active_targets)
         for target in grid
     )
+
+
+def _scout_occupied_target_grid(
+    rgb: np.ndarray,
+) -> tuple[tuple[int, int], ...] | None:
+    """Find the portal grid that contains the red P2 scout."""
+    targets = _merge_target_centres(
+        _orange_target_centres(rgb),
+        _active_target_centres(rgb),
+    )
+    candidates = [
+        (_grid_active_occupancy(rgb, grid), grid)
+        for grid in _target_grids(targets)
+        if _scout_occupies_grid(rgb, grid)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: candidate[0])[1]
 
 
 def _partial_portal_target(
@@ -1126,6 +1324,14 @@ def _closed_runs(
     return tuple((start_x, end_x) for start_x, end_x in runs if end_x - start_x + 1 >= min_length)
 
 
+def four_swords_player_position(
+    rgb: np.ndarray,
+    player: int,
+) -> tuple[int, int] | None:
+    """Find one Link from its visible color and hair."""
+    return _link_position(rgb, player)
+
+
 def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
     red = rgb[:, :, 0]
     green = rgb[:, :, 1]
@@ -1161,7 +1367,9 @@ def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
         x0 = max(0, int(xs.min()) - 10)
         x1 = min(rgb.shape[1], int(xs.max()) + 11)
         y0 = max(0, int(ys.min()) - 14)
-        y1 = min(rgb.shape[0], int(ys.max()) + 9)
+        y1 = min(rgb.shape[0], int(ys.min()) + 5)
+        # Link's yellow hair is above the colored body. The pink NPC has a
+        # yellow base below its body, so it must not identify Purple Link.
         if int(np.count_nonzero(yellow[y0:y1, x0:x1])) < 4:
             continue
         x = int(np.mean(xs))
@@ -1253,15 +1461,22 @@ def first_training_reward_visible(frame: RawFrame) -> bool:
     """Recognize both reward chests revealed by the first switch puzzle."""
     view = to_rgb(split_player_frames(frame, 4)[0])
     regions = (view[75:110, 25:55], view[75:110, 185:215])
-    return all(
-        int(
-            np.count_nonzero(
-                (region[:, :, 0] > 240) & (region[:, :, 1] > 210) & (region[:, :, 2] < 80)
-            )
+    for region in regions:
+        yellow = (
+            (region[:, :, 0] > 240)
+            & (region[:, :, 1] > 210)
+            & (region[:, :, 2] < 80)
         )
-        >= 50
-        for region in regions
-    )
+        white = (
+            (region[:, :, 0] > 220)
+            & (region[:, :, 1] > 210)
+            & (region[:, :, 2] > 180)
+        )
+        if int(np.count_nonzero(yellow)) < 50:
+            return False
+        if int(np.count_nonzero(white)) < 12:
+            return False
+    return True
 
 
 def solve_first_training_puzzle(

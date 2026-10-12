@@ -138,6 +138,18 @@ def test_four_swords_npc_adjacent_uses_p2_visible_pixels() -> None:
     assert four_swords_npc_adjacent(views)
 
 
+def test_pink_npc_with_yellow_base_does_not_identify_purple_link() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    # The NPC is close to the screen centre. Its yellow pixels are below it.
+    rgb[72:86, 86:96] = (190, 40, 190)
+    rgb[86:92, 86:96] = (245, 190, 35)
+    # Purple Link is lower on the screen. Link's yellow hair is above the body.
+    rgb[116:122, 116:125] = (245, 190, 35)
+    rgb[123:137, 116:125] = (180, 40, 190)
+
+    assert _link_position(rgb, 3) == (120, 140)
+
+
 def test_isolated_bot_rejoins_the_visible_green_link() -> None:
     rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
     rgb[60:66, 116:125] = (245, 190, 35)
@@ -198,6 +210,7 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
         visible_targets: tuple[tuple[int, int], ...] = targets,
         active_targets: tuple[tuple[int, int], ...] = (),
         frame_index: int = 0,
+        scout_position: tuple[int, int] | None = None,
     ) -> RawFrame:
         rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
         for x, y in visible_targets:
@@ -224,6 +237,18 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
         x, y = position
         rgb[y - 20 : y - 14, x - 4 : x + 5] = (245, 190, 35)
         rgb[y - 13 : y + 1, x - 4 : x + 5] = colours[player]
+        if scout_position is not None:
+            scout_x, scout_y = scout_position
+            rgb[scout_y - 20 : scout_y - 14, scout_x - 4 : scout_x + 5] = (
+                245,
+                190,
+                35,
+            )
+            rgb[scout_y - 13 : scout_y + 1, scout_x - 4 : scout_x + 5] = (
+                220,
+                30,
+                25,
+            )
         packed = (
             ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
@@ -240,8 +265,12 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     navigator = FourSwordsVisualTargetNavigator()
     navigator.portal_search_started = True
     navigator.forward_grid_players.update((1, 2, 3))
-    positions = {1: (120, 80), 2: (120, 80), 3: (120, 80)}
-    views = tuple(view(max(index, 1), positions.get(index, (120, 80))) for index in range(4))
+    views = (
+        view(1, (120, 80), targets[:-1], (targets[-1],)),
+        view(1, (120, 80), targets[:-1], (targets[-1],)),
+        view(2, (95, 80), targets[:-1], (targets[-1],), scout_position=targets[-1]),
+        view(3, (95, 80), targets[:-1], (targets[-1],), scout_position=targets[-1]),
+    )
     p2_unreached = FourSwordsVisualTargetNavigator()
     p2_target_below = list(views)
     p2_target_below[1] = view(1, (120, 80), ((120, 125),))
@@ -264,7 +293,8 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     shifted_p4_target = (160, 120)
     partial_views = list(views)
     partial_views[3] = view(3, (120, 80), (shifted_p4_target,))
-    assert navigator("reach_warps", tuple(partial_views))[3] != ("wait",)
+    navigator("reach_warps", tuple(partial_views))
+    assert 3 not in navigator.reached_players
 
     portal_views = {
         1: (((120, 40),), ((70, 40), (70, 88), (120, 88))),
@@ -273,7 +303,13 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     }
     reached_views = list(views)
     for player, (visible, active) in portal_views.items():
-        reached_views[player] = view(player, (120, 80), visible, active)
+        reached_views[player] = view(
+            player,
+            (120, 80),
+            visible,
+            active,
+            scout_position=active[1] if player != 1 else None,
+        )
 
     navigator("reach_warps", tuple(reached_views))
     reached_views = [
@@ -283,6 +319,9 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
             portal_views[player][0],
             portal_views[player][1],
             frame_index=1,
+            scout_position=(
+                portal_views[player][1][1] if player != 1 else None
+            ),
         )
         if player in (1, 2, 3)
         else reached_views[player]
@@ -313,7 +352,8 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     assert repair_navigator.reached_players == {2, 3}
     assert 1 not in repair_navigator.assignments
     assert 1 not in repair_navigator.tracked_targets
-    assert 1 in repair_navigator.forward_grid_players
+    assert 1 in repair_navigator.seeking_team_players
+    assert 1 not in repair_navigator.forward_grid_players
 
     wrong_group_views = list(reached_views)
     wrong_group_views[2] = view(
@@ -463,6 +503,30 @@ def test_new_room_does_not_override_the_team_model_plan() -> None:
     assert navigator("explore_room", (first,) * 4) == expected
 
 
+def test_new_room_interacts_only_when_p2_is_already_beside_an_npc() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    rgb[70:76, 116:125] = (245, 190, 35)
+    rgb[77:91, 116:125] = (220, 30, 25)
+    rgb[80:94, 136:146] = (222, 40, 165)
+    packed = (
+        ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+        | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+        | (rgb[:, :, 2].astype(np.uint16) >> 3)
+    )
+    frame = RawFrame(
+        data=packed.astype("<u2").tobytes(),
+        width=240,
+        height=160,
+        pitch=480,
+        index=0,
+    )
+    navigator = FourSwordsVisualTargetNavigator()
+
+    plan = navigator("explore_room", (frame,) * 4)
+
+    assert plan[1][:2] == ("face_right", "interact")
+
+
 def test_room_collision_guard_detects_a_follower_near_the_scout() -> None:
     rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
     rgb[62:70, 116:124] = (230, 180, 40)
@@ -524,7 +588,7 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
     assert all(player in navigator.leaving_return_players for player in (2, 3))
 
 
-def test_followers_accept_first_grid_after_a_confirmed_scout_probe() -> None:
+def test_followers_accept_only_the_grid_occupied_by_the_confirmed_scout() -> None:
     navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
 
     def frame(with_grid: bool, index: int) -> RawFrame:
@@ -533,6 +597,10 @@ def test_followers_accept_first_grid_after_a_confirmed_scout_probe() -> None:
             for x, y in ((70, 40), (120, 40), (70, 88), (120, 88)):
                 rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
                 rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+            rgb[73:104, 105:136] = (173, 219, 255)
+            rgb[79:98, 111:130] = (255, 251, 255)
+            rgb[68:74, 116:125] = (245, 190, 35)
+            rgb[75:89, 116:125] = (220, 30, 25)
         packed = (
             ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
@@ -559,6 +627,16 @@ def test_followers_accept_first_grid_after_a_confirmed_scout_probe() -> None:
     assert 3 not in navigator.leaving_return_players
     assert plans[2] != ("move_up",)
     assert plans[3] != ("move_up",)
+
+    unoccupied_grid = frame(False, 2)
+    navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
+    navigator("reach_warps", (blank,) * 4)
+    plans = navigator("reach_warps", (grid, grid, unoccupied_grid, unoccupied_grid))
+
+    assert 2 in navigator.leaving_return_players
+    assert 3 in navigator.leaving_return_players
+    assert plans[2] == ("move_up",)
+    assert plans[3] == ("move_up",)
 
 
 def test_visible_reached_teammate_ignores_a_false_colour_match() -> None:
@@ -615,6 +693,25 @@ def test_navigator_keeps_a_confirmed_forward_grid_during_marker_flicker() -> Non
         for x, y in targets:
             rgb[y - 15 : y + 16, x - 15 : x + 16] = (250, 100, 20)
             rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
+        scout_x, scout_y = targets[-1]
+        rgb[
+            scout_y - 15 : scout_y + 16,
+            scout_x - 15 : scout_x + 16,
+        ] = (173, 219, 255)
+        rgb[
+            scout_y - 9 : scout_y + 10,
+            scout_x - 9 : scout_x + 10,
+        ] = (255, 251, 255)
+        rgb[scout_y - 20 : scout_y - 14, scout_x - 4 : scout_x + 5] = (
+            245,
+            190,
+            35,
+        )
+        rgb[scout_y - 13 : scout_y + 1, scout_x - 4 : scout_x + 5] = (
+            220,
+            30,
+            25,
+        )
         if marked:
             rgb[59:69, 90:100] = (222, 40, 165)
         packed = (
@@ -757,7 +854,7 @@ def test_visual_target_navigator_faces_npc_and_recovers_from_failed_dialogue() -
     dialogue = rgb.copy()
     dialogue[92:148, 4:236] = (8, 8, 8)
     assert navigator("advance_dialogue", (frame(dialogue),) * 4)[1] == (
-        "interact",
+        "advance_text",
         "wait",
         "wait",
         "wait",
@@ -800,4 +897,8 @@ def test_first_training_reward_needs_both_visible_chests() -> None:
     rgb[80:90, 30:40] = (255, 230, 0)
     assert not first_training_reward_visible(frame())
     rgb[80:90, 190:200] = (255, 230, 0)
+    assert not first_training_reward_visible(frame())
+    rgb[80:84, 32:36] = (245, 245, 220)
+    assert not first_training_reward_visible(frame())
+    rgb[80:84, 192:196] = (245, 245, 220)
     assert first_training_reward_visible(frame())

@@ -16,6 +16,7 @@ from gbharness.agent.linked_runner import (
     LinkedRunnerConfig,
     PlayerAssignment,
     _meaningful_visual_change,
+    _positions_match,
 )
 from gbharness.agent.team import TeamDecision, TeamDecisionRequest
 from gbharness.agent.zelda import FOUR_SWORDS_POLICY
@@ -357,6 +358,11 @@ def test_perceptual_stuck_detector_ignores_small_animation_but_detects_movement(
     assert _meaningful_visual_change(previous, moved_sprite)
 
 
+def test_visible_position_detects_a_block_despite_background_animation() -> None:
+    assert _positions_match((120, 90), (122, 92))
+    assert not _positions_match((120, 90), (126, 90))
+
+
 def test_blocked_repeated_movement_escalates_recovery_actions() -> None:
     repeated_move = [Decision("move_down", 1.0, "blocked") for _ in range(3)]
     runner = LinkedAgentRunner(
@@ -373,6 +379,25 @@ def test_blocked_repeated_movement_escalates_recovery_actions() -> None:
         "move_down",
         "move_up",
         "move_right",
+    ]
+
+
+def test_explore_room_routes_perpendicular_to_a_blocked_vertical_path() -> None:
+    repeated_move = [Decision("move_down", 1.0, "blocked") for _ in range(2)]
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assignments([repeated_move.copy() for _ in range(4)]),
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=2, max_model_calls=8),
+    )
+    runner._team_stage = "explore_room"
+
+    result = runner.run()
+
+    assert [turn.players[1].action for turn in result.turns] == [
+        "move_down",
+        "move_left",
     ]
 
 

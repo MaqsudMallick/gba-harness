@@ -6,6 +6,7 @@ import contextvars
 import hashlib
 import json
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -122,6 +123,9 @@ class LinkedAgentRunner:
     visual_plan_override: (
         Callable[[str, tuple[RawFrame, ...]], dict[int, tuple[str, ...]]] | None
     ) = None
+    player_position_detector: (
+        Callable[[np.ndarray, int], tuple[int, int] | None] | None
+    ) = None
     probe_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
     team_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
     team_target_stability_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
@@ -163,6 +167,7 @@ class LinkedAgentRunner:
         records: list[LinkedTurnRecord] = []
         recent: list[deque[str]] = [deque(maxlen=6) for _ in self.assignments]
         previous_views: list[np.ndarray | None] = [None] * len(self.assignments)
+        previous_positions: list[tuple[int, int] | None] = [None] * len(self.assignments)
         repeated = [0] * len(self.assignments)
         errors = [0] * len(self.assignments)
         calls = 0
@@ -241,6 +246,7 @@ class LinkedAgentRunner:
                             break
                         self._resume_after_room_transition()
                         previous_views = [None] * len(self.assignments)
+                        previous_positions = [None] * len(self.assignments)
                         repeated = [0] * len(self.assignments)
                         continue
                 if (
@@ -261,12 +267,32 @@ class LinkedAgentRunner:
                 pngs = tuple(to_png(view) for view in views)
                 for player, rgb in enumerate(rgbs):
                     previous = previous_views[player]
+                    position = (
+                        self.player_position_detector(rgb, player)
+                        if self.player_position_detector is not None
+                        and self._team_stage == "explore_room"
+                        else None
+                    )
+                    position_is_stable = (
+                        previous_positions[player] is not None
+                        and position is not None
+                        and _positions_match(previous_positions[player], position)
+                    )
+                    view_is_stable = (
+                        previous is not None and not _meaningful_visual_change(previous, rgb)
+                    )
                     repeated[player] = (
                         repeated[player] + 1
-                        if previous is not None and not _meaningful_visual_change(previous, rgb)
+                        if position_is_stable
+                        or (
+                            position is None
+                            and previous_positions[player] is None
+                            and view_is_stable
+                        )
                         else 0
                     )
                     previous_views[player] = rgb.copy()
+                    previous_positions[player] = position
 
                 if self._team_stage == "wait_for_human_warp":
                     wait_result = self._wait_for_human_warp()
@@ -296,6 +322,7 @@ class LinkedAgentRunner:
                         break
                     self._resume_after_room_transition()
                     previous_views = [None] * len(self.assignments)
+                    previous_positions = [None] * len(self.assignments)
                     repeated = [0] * len(self.assignments)
                     continue
 
@@ -1018,6 +1045,7 @@ class LinkedAgentRunner:
             and isinstance(assignment.provider, HumanDecisionProvider)
         }
         live_actions: dict[int, list[str]] = {index: [] for index in live_humans}
+        next_animation_tick = time.monotonic() + 0.25
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="team-captain") as executor:
             future = executor.submit(contextvars.copy_context().run, plan)
             while not future.done():
@@ -1026,6 +1054,12 @@ class LinkedAgentRunner:
                     assert isinstance(provider, HumanDecisionProvider)
                     action = provider.poll_action(timeout=0.05)
                     if action is None:
+                        if time.monotonic() < next_animation_tick:
+                            continue
+                        self.session.submit(
+                            {assignment.player: self.policy.resolve("wait")}
+                        )
+                        next_animation_tick = time.monotonic() + 0.25
                         continue
                     if action not in self.policy.actions:
                         action = "wait"
@@ -1059,6 +1093,7 @@ class LinkedAgentRunner:
                             },
                         )
                     live_actions[index].append(action)
+                    next_animation_tick = time.monotonic() + 0.25
 
             team: TeamDecision | BaseException
             try:
@@ -1386,7 +1421,11 @@ class LinkedAgentRunner:
             "right": ("move_up", "move_down"),
         }
         if repeated == 1:
-            recovery = opposite[direction]
+            recovery = (
+                alternatives[direction][player % 2]
+                if self._team_stage == "explore_room" and direction in {"up", "down"}
+                else opposite[direction]
+            )
         elif repeated == 2:
             recovery = alternatives[direction][player % 2]
         else:
@@ -1492,6 +1531,18 @@ def _meaningful_visual_change(
 ) -> bool:
     """Detect meaningful scene/camera progress, not ordinary sprite animation."""
     return _visual_change_fraction(previous, current) >= changed_pixel_fraction
+
+
+def _positions_match(
+    previous: tuple[int, int],
+    current: tuple[int, int],
+    *,
+    tolerance: int = 3,
+) -> bool:
+    """Return true when a visible player did not move."""
+    dx = current[0] - previous[0]
+    dy = current[1] - previous[1]
+    return dx * dx + dy * dy <= tolerance * tolerance
 
 
 def _visual_change_fraction(previous: np.ndarray, current: np.ndarray) -> float:
