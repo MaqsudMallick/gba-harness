@@ -46,7 +46,6 @@ class LinkedRunnerConfig:
     terminal_confirmations: int = 2
     max_consecutive_errors: int = 3
     autoplay_human_dialogue: bool = False
-    autoplay_human_navigation: bool = False
     continue_after_team_target: bool = False
     complete_after_room_transition: bool = False
 
@@ -531,7 +530,6 @@ class LinkedAgentRunner:
                     (action_keys[index],)
                     if assignment.participant_type == "human"
                     and not self.config.autoplay_human_dialogue
-                    and not self.config.autoplay_human_navigation
                     else executed_plans[index]
                     for index, assignment in enumerate(self.assignments)
                 )
@@ -1229,10 +1227,7 @@ class LinkedAgentRunner:
             if assignment.participant_type == "human":
                 plans.append(
                     self._team_human_plan
-                    if (
-                        self.config.autoplay_human_dialogue
-                        or self.config.autoplay_human_navigation
-                    )
+                    if self.config.autoplay_human_dialogue
                     else ("wait",)
                 )
                 continue
@@ -1266,10 +1261,7 @@ class LinkedAgentRunner:
                         queued = provider.poll_action(timeout=0)
                         if queued is not None:
                             action = queued
-                        elif not (
-                            self.config.autoplay_human_dialogue
-                            or self.config.autoplay_human_navigation
-                        ):
+                        elif not self.config.autoplay_human_dialogue:
                             action = "wait"
                     else:
                         action = "wait"

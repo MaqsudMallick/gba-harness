@@ -1161,8 +1161,8 @@ def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
         x0 = max(0, int(xs.min()) - 10)
         x1 = min(rgb.shape[1], int(xs.max()) + 11)
         y0 = max(0, int(ys.min()) - 14)
-        y1 = min(rgb.shape[0], int(ys.min()) + 3)
-        if int(np.count_nonzero(yellow[y0:y1, x0:x1])) < 18:
+        y1 = min(rgb.shape[0], int(ys.max()) + 9)
+        if int(np.count_nonzero(yellow[y0:y1, x0:x1])) < 4:
             continue
         x = int(np.mean(xs))
         y = int(np.mean(ys))
