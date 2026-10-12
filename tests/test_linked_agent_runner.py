@@ -676,7 +676,7 @@ def test_visual_motor_steps_reuse_one_team_plan_for_the_stage() -> None:
     assert [turn.players[1].plan for turn in result.turns] == [
         ("move_up",),
         ("move_up",),
-        ("move_up",),
+        ("move_up", "wait"),
     ]
 
 

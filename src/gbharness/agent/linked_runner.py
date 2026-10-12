@@ -510,7 +510,11 @@ class LinkedAgentRunner:
                 if self.visual_plan_override is not None:
                     overrides = self.visual_plan_override(self._team_stage, views)
                     action_plans = tuple(
-                        overrides.get(assignment.player, action_plans[index])
+                        (
+                            overrides.get(assignment.player, action_plans[index])
+                            if repeated[assignment.player] < 2
+                            else action_plans[index]
+                        )
                         for index, assignment in enumerate(self.assignments)
                     )
                 action_summary = {
