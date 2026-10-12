@@ -318,6 +318,7 @@ def test_post_portal_room_allows_visible_combat_actions() -> None:
     assert "human_instruction" not in schema["properties"]
     assert "human_plan" in schema["properties"]
     assert "Do not return through the entrance portal" in models.kwargs["contents"][0]
+    assert "use P2 as the scout" in models.kwargs["contents"][0]
 
 
 def test_parallel_lanes_can_use_the_same_direction() -> None:
