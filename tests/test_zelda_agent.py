@@ -7,6 +7,7 @@ import numpy as np
 from gbharness.agent.zelda import (
     FourSwordsVisualTargetNavigator,
     _forward_marked_target_grid,
+    _gray_switch_centres,
     _link_position,
     _order_target_grid,
     _partial_portal_target,
@@ -146,6 +147,33 @@ def test_isolated_bot_rejoins_the_visible_green_link() -> None:
     rgb[128:142, 166:175] = (35, 145, 45)
 
     assert _visible_team_rejoin_step(rgb, 2, (120, 84)) == ("move_down",)
+
+
+def test_explore_room_routes_one_bot_to_aligned_gray_switch() -> None:
+    rgb = np.full((160, 240, 3), (255, 251, 198), dtype=np.uint8)
+    rgb[32:48, 96:112] = (181, 170, 173)
+    rgb[35:45, 99:109] = (222, 227, 231)
+    rgb[60:66, 100:109] = (245, 190, 35)
+    rgb[67:81, 100:109] = (220, 30, 25)
+    packed = (
+        ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+        | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+        | (rgb[:, :, 2].astype(np.uint16) >> 3)
+    )
+    frame = RawFrame(
+        data=packed.astype("<u2").tobytes(),
+        width=240,
+        height=160,
+        pitch=480,
+        index=0,
+    )
+
+    assert _gray_switch_centres(rgb) == ((103, 39),)
+    navigator = FourSwordsVisualTargetNavigator()
+    plans = navigator("explore_room", (frame,) * 4)
+
+    assert navigator.explore_switch_player == 1
+    assert plans == {1: ("move_up",), 2: ("wait",), 3: ("wait",)}
 
 
 def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
@@ -433,7 +461,7 @@ def test_reach_warps_preserves_the_scouts_confirmed_probe_target() -> None:
     assert 1 in navigator.reached_players
 
 
-def test_new_room_holds_followers_until_the_scout_confirms_progress() -> None:
+def test_new_room_holds_all_bots_without_a_visible_target() -> None:
     navigator = FourSwordsVisualTargetNavigator()
 
     def frame(colour: tuple[int, int, int], index: int) -> RawFrame:
@@ -452,31 +480,15 @@ def test_new_room_holds_followers_until_the_scout_confirms_progress() -> None:
         )
 
     first = frame((120, 170, 90), 0)
-    second = frame((180, 130, 70), 1)
-    third = frame((80, 150, 190), 2)
-    fourth = frame((170, 80, 150), 3)
-    fifth = frame((70, 190, 120), 4)
+    expected = {1: ("wait",), 2: ("wait",), 3: ("wait",)}
 
-    assert navigator("explore_room", (first,) * 4) == {
-        2: ("wait",),
-        3: ("wait",),
-    }
-    assert navigator("explore_room", (second,) * 4) == {
-        2: ("wait",),
-        3: ("wait",),
-    }
-    assert navigator("explore_room", (third,) * 4) == {3: ("wait",)}
-    assert navigator.explore_scout_ready
-    assert navigator("explore_room", (fourth,) * 4) == {3: ("wait",)}
-    assert navigator("explore_room", (fifth,) * 4) == {}
-    assert navigator.explore_follower_ready
+    assert navigator("explore_room", (first,) * 4) == expected
+    assert navigator("explore_room", (frame((180, 130, 70), 1),) * 4) == expected
+    assert navigator("explore_room", (frame((80, 150, 190), 2),) * 4) == expected
 
     navigator.reset()
 
-    assert navigator("explore_room", (third,) * 4) == {
-        2: ("wait",),
-        3: ("wait",),
-    }
+    assert navigator("explore_room", (first,) * 4) == expected
 
 
 def test_room_collision_guard_detects_a_follower_near_the_scout() -> None:

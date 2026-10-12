@@ -219,12 +219,9 @@ class FourSwordsVisualTargetNavigator:
     active_frames: dict[int, int] = field(default_factory=dict)
     probe_reached: bool = False
     dialogue_attempts: int = 0
-    explore_scout_view: np.ndarray | None = field(default=None, repr=False)
-    explore_scout_progress: int = 0
-    explore_scout_ready: bool = False
-    explore_follower_view: np.ndarray | None = field(default=None, repr=False)
-    explore_follower_progress: int = 0
-    explore_follower_ready: bool = False
+    explore_switch_player: int | None = None
+    explore_switch_target: tuple[int, int] | None = None
+    explore_switch_reached: bool = False
 
     def reset(self) -> None:
         """Clear first-room visual state before the team enters a new room."""
@@ -245,12 +242,9 @@ class FourSwordsVisualTargetNavigator:
         self.active_frames.clear()
         self.probe_reached = False
         self.dialogue_attempts = 0
-        self.explore_scout_view = None
-        self.explore_scout_progress = 0
-        self.explore_scout_ready = False
-        self.explore_follower_view = None
-        self.explore_follower_progress = 0
-        self.explore_follower_ready = False
+        self.explore_switch_player = None
+        self.explore_switch_target = None
+        self.explore_switch_reached = False
 
     def __call__(
         self,
@@ -434,37 +428,75 @@ class FourSwordsVisualTargetNavigator:
         self,
         views: tuple[RawFrame, ...],
     ) -> dict[int, tuple[str, ...]]:
-        """Keep followers still until P2 confirms visual route progress."""
+        """Move one scout to a visible lane switch and keep followers still."""
         if len(views) < 4:
             return {}
-        if not self.explore_scout_ready:
-            current = to_rgb(views[1])
-            previous = self.explore_scout_view
-            self.explore_scout_view = current.copy()
-            if previous is not None and _scene_change_fraction(previous, current) >= 0.08:
-                self.explore_scout_progress += 1
-            if self.explore_scout_progress < 2:
-                return {2: ("wait",), 3: ("wait",)}
-            self.explore_scout_ready = True
 
-        plans: dict[int, tuple[str, ...]] = {}
-        p3_view = to_rgb(views[2])
-        if not self.explore_follower_ready:
-            previous = self.explore_follower_view
-            self.explore_follower_view = p3_view.copy()
-            if previous is not None and _scene_change_fraction(previous, p3_view) >= 0.08:
-                self.explore_follower_progress += 1
-            if self.explore_follower_progress < 2:
-                plans[3] = ("wait",)
-            else:
-                self.explore_follower_ready = True
+        switch_plan = self._visible_lane_switch_plan(views)
+        if switch_plan is not None:
+            return {
+                1: switch_plan if self.explore_switch_player == 1 else ("wait",),
+                2: switch_plan if self.explore_switch_player == 2 else ("wait",),
+                3: switch_plan if self.explore_switch_player == 3 else ("wait",),
+            }
 
-        if _player_near_teammate(p3_view, 2, (1,)):
-            plans[2] = ("wait",)
-        p4_view = to_rgb(views[3])
-        if _player_near_teammate(p4_view, 3, (1, 2)):
-            plans[3] = ("wait",)
-        return plans
+        # A camera change does not prove that the scout found a valid target.
+        # Keep every bot still until screenshot vision identifies one.
+        return {1: ("wait",), 2: ("wait",), 3: ("wait",)}
+
+    def _visible_lane_switch_plan(
+        self,
+        views: tuple[RawFrame, ...],
+    ) -> tuple[str, ...] | None:
+        """Route one bot to a gray switch in its current visible lane."""
+        if self.explore_switch_player is None:
+            for player in (1, 2, 3):
+                rgb = to_rgb(views[player])
+                position = _link_position(rgb, player)
+                if position is None:
+                    continue
+                targets = tuple(
+                    target
+                    for target in _gray_switch_centres(rgb)
+                    if abs(target[0] - position[0]) <= 18
+                )
+                if not targets:
+                    continue
+                origin = position
+                self.explore_switch_player = player
+                self.explore_switch_target = min(
+                    targets,
+                    key=lambda target: _squared_distance(origin, target),
+                )
+                break
+
+        selected_player = self.explore_switch_player
+        target = self.explore_switch_target
+        if selected_player is None or target is None:
+            return None
+        rgb = to_rgb(views[selected_player])
+        position = _link_position(rgb, selected_player)
+        if position is None:
+            return ("wait",)
+
+        aligned_targets = tuple(
+            candidate
+            for candidate in _gray_switch_centres(rgb)
+            if abs(candidate[0] - position[0]) <= 18
+        )
+        if aligned_targets:
+            target = min(
+                aligned_targets,
+                key=lambda candidate: _squared_distance(position, candidate),
+            )
+            self.explore_switch_target = target
+
+        if _squared_distance(position, target) <= 13 * 13:
+            self.explore_switch_reached = True
+            return ("wait",)
+        if self.explore_switch_reached:
+            return ("wait",)
+        return _precision_route_step(position, target)
 
     def _reach_npc_plan(
         self,
@@ -654,19 +686,6 @@ class FourSwordsVisualTargetNavigator:
 
 def _squared_distance(first: tuple[int, int], second: tuple[int, int]) -> int:
     return (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2
-
-
-def _scene_change_fraction(previous: np.ndarray, current: np.ndarray) -> float:
-    """Measure a room or camera change while excluding most HUD pixels."""
-    if previous.shape != current.shape:
-        return 1.0
-    previous_playfield = previous[20:150]
-    current_playfield = current[20:150]
-    difference = np.max(
-        np.abs(current_playfield.astype(np.int16) - previous_playfield.astype(np.int16)),
-        axis=2,
-    )
-    return float(np.count_nonzero(difference >= 24)) / float(difference.size)
 
 
 def _player_near_teammate(
@@ -946,6 +965,27 @@ def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
         ratio = width / height
         if 0.65 <= ratio <= 1.35 and int(ys.min()) >= 20:
             centres.append((int(np.mean(xs)), int(np.mean(ys))))
+    return tuple(centres)
+
+
+def _gray_switch_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
+    """Find square gray floor switches from visible neutral pixels."""
+    maximum = np.max(rgb, axis=2)
+    minimum = np.min(rgb, axis=2)
+    mask = (
+        (maximum - minimum <= 16)
+        & (maximum >= 155)
+        & (maximum <= 240)
+    )
+    centres: list[tuple[int, int]] = []
+    for xs, ys in _components(mask):
+        width = int(xs.max() - xs.min() + 1)
+        height = int(ys.max() - ys.min() + 1)
+        if len(xs) < 140 or not 12 <= width <= 20 or not 10 <= height <= 20:
+            continue
+        if int(ys.min()) < 20:
+            continue
+        centres.append((int(np.mean(xs)), int(np.mean(ys))))
     return tuple(centres)
 
 
