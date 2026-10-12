@@ -1168,6 +1168,8 @@ class LinkedAgentRunner:
         human_action_seen = False
         idle_polls = 0
         displaced_confirmations = 0
+        activation_seen = False
+        activation_polls = 0
         while not self.stop_event.is_set():
             action = provider.poll_action(timeout=0.1)
             if action is None and self.human_warp_plan is not None:
@@ -1186,6 +1188,14 @@ class LinkedAgentRunner:
             transition_seen = transition_seen or not gameplay_visible
             current_views = split_player_frames(current, len(self.assignments))
             current_rgbs = tuple(to_rgb(view) for view in current_views)
+            changed_views = sum(
+                _visual_change_fraction(before, after) >= 0.18
+                for before, after in zip(self._warp_reference, current_rgbs, strict=True)
+            )
+            if changed_views >= 3 and not activation_seen:
+                activation_seen = True
+            if activation_seen and not transition_seen:
+                activation_polls += 1
             if action is not None:
                 self.telemetry.log(
                     "P{player} human portal action {action}",
@@ -1200,7 +1210,14 @@ class LinkedAgentRunner:
                 if self.team_target_stability_detector is not None
                 else True
             )
-            if human_action_seen and idle_polls > 0 and gameplay_visible and not stable:
+            activation_grace_complete = not activation_seen or activation_polls >= 12
+            if (
+                human_action_seen
+                and idle_polls > 0
+                and gameplay_visible
+                and not stable
+                and activation_grace_complete
+            ):
                 displaced_confirmations += 1
             else:
                 displaced_confirmations = 0
