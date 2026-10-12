@@ -125,6 +125,7 @@ class LinkedAgentRunner:
     team_target_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
     team_target_stability_detector: Callable[[tuple[RawFrame, ...]], bool] | None = None
     on_team_target_lost: Callable[[tuple[RawFrame, ...]], None] | None = None
+    human_warp_plan: Callable[[tuple[RawFrame, ...]], str] | None = None
     gameplay_detector: Callable[[RawFrame], bool] | None = None
     on_next_room: Callable[[], None] | None = None
     on_stage_change: Callable[[str], None] | None = None
@@ -1157,9 +1158,14 @@ class LinkedAgentRunner:
         displaced_confirmations = 0
         while not self.stop_event.is_set():
             action = provider.poll_action(timeout=0.1)
+            if action is None and self.human_warp_plan is not None:
+                visible = self.frames.require()
+                visible_views = split_player_frames(visible, len(self.assignments))
+                action = self.human_warp_plan(visible_views)
             submitted = action if action is not None and action in self.policy.actions else "wait"
-            human_action_seen = human_action_seen or action is not None
-            idle_polls = idle_polls + 1 if action is None else 0
+            active_input = action is not None and submitted != "wait"
+            human_action_seen = human_action_seen or active_input
+            idle_polls = idle_polls + 1 if not active_input else 0
             result = self.session.submit({human.player: self.policy.resolve(submitted)})
             current = self.frames.require()
             gameplay_visible = (

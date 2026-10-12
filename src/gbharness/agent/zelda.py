@@ -515,25 +515,43 @@ class FourSwordsVisualTargetNavigator:
     def all_assigned_players_reached(self, views: tuple[RawFrame, ...]) -> bool:
         """Confirm that P2 through P4 overlap their fixed visual targets."""
         plans = self("reach_warps", views)
-        return self.reached_players == {1, 2, 3} and all(
+        individually_reached = self.reached_players == {1, 2, 3} and all(
             plans.get(player) == ("wait",) for player in (1, 2, 3)
         )
+        if not individually_reached:
+            return False
+        if self.assigned_players_still_reached(views):
+            return True
+        self.prepare_portal_repair(views)
+        return False
 
     def assigned_players_still_reached(self, views: tuple[RawFrame, ...]) -> bool:
         """Confirm that each bot still overlaps an active portal target."""
         if len(views) < 4:
             return False
-        return all(
-            _player_on_active_target(to_rgb(views[player]), player)
+        occupancies = tuple(
+            _active_grid_occupancy(to_rgb(views[player]), player)
             for player in (1, 2, 3)
         )
+        return min(occupancies) >= 3
 
     def prepare_portal_repair(self, views: tuple[RawFrame, ...]) -> None:
         """Clear the saved target only for each displaced bot."""
         if len(views) < 4:
             return
+        occupancies = {
+            player: _active_grid_occupancy(to_rgb(views[player]), player)
+            for player in (1, 2, 3)
+        }
+        strongest_group = max(occupancies.values(), default=0)
         for player in (1, 2, 3):
-            if _player_on_active_target(to_rgb(views[player]), player):
+            on_target = occupancies[player] > 0
+            wrong_group = (
+                strongest_group >= 2
+                and occupancies[player] > 0
+                and occupancies[player] < strongest_group
+            )
+            if on_target and not wrong_group:
                 continue
             self.reached_players.discard(player)
             self.reached_misses.pop(player, None)
@@ -541,10 +559,54 @@ class FourSwordsVisualTargetNavigator:
             self.active_frames.pop(player, None)
             self.assignments.pop(player, None)
             self.tracked_targets.pop(player, None)
-            self.leaving_return_players.discard(player)
-            self.forward_grid_players.add(player)
+            if wrong_group:
+                self.leaving_return_players.add(player)
+                self.forward_grid_players.discard(player)
+                self.cleared_return_players.discard(player)
+                self.return_grid_absent_counts[player] = 0
+            else:
+                self.leaving_return_players.discard(player)
+                self.forward_grid_players.add(player)
             if player == 1:
                 self.probe_reached = False
+
+    def human_portal_action(self, views: tuple[RawFrame, ...]) -> str:
+        """Move P1 to the empty pad in the bot group's visible portal grid."""
+        if not views:
+            return "wait"
+        rgb = to_rgb(views[0])
+        position = _link_position(rgb, 0)
+        if position is None:
+            return "wait"
+        active_targets = _active_target_centres(rgb)
+        targets = _merge_target_centres(_orange_target_centres(rgb), active_targets)
+        candidates: list[tuple[int, int, tuple[tuple[int, int], ...]]] = []
+        for grid in _target_grids(targets):
+            occupancy = sum(
+                any(_squared_distance(target, active) <= 12 * 12 for active in active_targets)
+                for target in grid
+            )
+            centre = (
+                sum(target[0] for target in grid) // len(grid),
+                sum(target[1] for target in grid) // len(grid),
+            )
+            candidates.append((occupancy, -_squared_distance(position, centre), grid))
+        if not candidates:
+            return "wait"
+        occupancy, _, grid = max(candidates, key=lambda candidate: candidate[:2])
+        if occupancy < 3:
+            return "wait"
+        empty_targets = [
+            target
+            for target in grid
+            if not any(
+                _squared_distance(target, active) <= 12 * 12 for active in active_targets
+            )
+        ]
+        if not empty_targets:
+            return "wait"
+        target = min(empty_targets, key=lambda item: _squared_distance(position, item))
+        return _precision_route_step(position, target)[0]
 
 
 def _squared_distance(first: tuple[int, int], second: tuple[int, int]) -> int:
@@ -581,15 +643,26 @@ def _player_near_teammate(
     )
 
 
-def _player_on_active_target(rgb: np.ndarray, player: int) -> bool:
-    """Detect whether one bot overlaps an active portal target."""
+def _active_grid_occupancy(rgb: np.ndarray, player: int) -> int:
+    """Count active pads in the portal grid occupied by one bot."""
     position = _link_position(rgb, player)
     if position is None:
-        return False
-    return any(
-        _squared_distance(position, target) <= 14 * 14
-        for target in _active_target_centres(rgb)
-    )
+        return 0
+    active_targets = _active_target_centres(rgb)
+    if not any(
+        _squared_distance(position, target) <= 14 * 14 for target in active_targets
+    ):
+        return 0
+    targets = _merge_target_centres(_orange_target_centres(rgb), active_targets)
+    occupancies = [
+        sum(
+            any(_squared_distance(target, active) <= 12 * 12 for active in active_targets)
+            for target in grid
+        )
+        for grid in _target_grids(targets)
+        if any(_squared_distance(position, target) <= 18 * 18 for target in grid)
+    ]
+    return max(occupancies, default=0)
 
 
 def _private_dialogue_visible(rgb: np.ndarray) -> bool:
@@ -1028,7 +1101,18 @@ def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
     red = rgb[:, :, 0]
     green = rgb[:, :, 1]
     blue = rgb[:, :, 2]
-    if player == 1:
+    if player == 0:
+        red_wide = red.astype(np.int16)
+        green_wide = green.astype(np.int16)
+        blue_wide = blue.astype(np.int16)
+        mask = (
+            (green > 70)
+            & (red < 110)
+            & (blue < 100)
+            & (green_wide > red_wide + 20)
+            & (green_wide > blue_wide + 20)
+        )
+    elif player == 1:
         mask = (red > 165) & (green < 100) & (blue < 100)
     elif player == 2:
         blue_wide = blue.astype(np.int16)

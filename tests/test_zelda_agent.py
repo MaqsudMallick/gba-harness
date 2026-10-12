@@ -205,6 +205,7 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
                 165,
             )
         colours = {
+            0: (35, 145, 45),
             1: (220, 30, 25),
             2: (30, 70, 220),
             3: (180, 40, 190),
@@ -254,36 +255,22 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     partial_views[3] = view(3, (120, 80), (shifted_p4_target,))
     assert navigator("reach_warps", tuple(partial_views))[3] != ("wait",)
 
+    portal_views = {
+        1: (((120, 40),), ((70, 40), (70, 88), (120, 88))),
+        2: (((170, 136),), ((120, 88), (170, 88), (120, 136))),
+        3: (((170, 88),), ((120, 40), (170, 40), (120, 88))),
+    }
     reached_views = list(views)
-    reached_views[1] = view(1, (120, 80), targets[:-1], ((120, 88),))
-    reached_views[2] = view(
-        2,
-        (120, 80),
-        ((170, 88), (120, 136), (170, 136)),
-        ((120, 88),),
-    )
-    reached_views[3] = view(
-        3,
-        (120, 80),
-        ((120, 40), (170, 40), (170, 88)),
-        ((120, 88),),
-    )
+    for player, (visible, active) in portal_views.items():
+        reached_views[player] = view(player, (120, 80), visible, active)
 
     navigator("reach_warps", tuple(reached_views))
     reached_views = [
         view(
             player,
             (120, 80),
-            (
-                targets[:-1]
-                if player == 1
-                else (
-                    ((170, 88), (120, 136), (170, 136))
-                    if player == 2
-                    else ((120, 40), (170, 40), (170, 88))
-                )
-            ),
-            ((120, 88),),
+            portal_views[player][0],
+            portal_views[player][1],
             frame_index=1,
         )
         if player in (1, 2, 3)
@@ -296,7 +283,12 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     assert navigator.assigned_players_still_reached(tuple(reached_views))
 
     displaced_views = list(reached_views)
-    displaced_views[1] = view(1, (120, 80), targets[1:], ((70, 40),))
+    displaced_views[1] = view(
+        1,
+        (120, 80),
+        ((120, 88),),
+        ((70, 40), (120, 40), (70, 88)),
+    )
     assert not navigator.assigned_players_still_reached(tuple(displaced_views))
 
     repair_navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
@@ -311,6 +303,33 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
     assert 1 not in repair_navigator.assignments
     assert 1 not in repair_navigator.tracked_targets
     assert 1 in repair_navigator.forward_grid_players
+
+    wrong_group_views = list(reached_views)
+    wrong_group_views[2] = view(
+        2,
+        (120, 80),
+        ((170, 88), (120, 136), (170, 136)),
+        ((120, 88),),
+    )
+    group_repair = FourSwordsVisualTargetNavigator(probe_reached=True)
+    group_repair.reached_players.update((1, 2, 3))
+    group_repair.forward_grid_players.update((1, 2, 3))
+    group_repair.assignments.update({1: 3, 2: 0, 3: 2})
+    group_repair.prepare_portal_repair(tuple(wrong_group_views))
+
+    assert group_repair.reached_players == {1, 3}
+    assert 2 in group_repair.leaving_return_players
+    assert 2 not in group_repair.forward_grid_players
+
+    human_view = view(
+        0,
+        (120, 80),
+        ((70, 40),),
+        ((120, 40), (70, 88), (120, 88)),
+    )
+    assert navigator.human_portal_action((human_view, *reached_views[1:])) == "move_left"
+    full_human_view = view(0, (120, 80), (), targets)
+    assert navigator.human_portal_action((full_human_view, *reached_views[1:])) == "wait"
 
     for _ in range(5):
         assert navigator("reach_warps", tuple(displaced_views))[1] == ("wait",)

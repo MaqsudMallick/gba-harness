@@ -80,6 +80,11 @@ def parser() -> argparse.ArgumentParser:
         help="let the designated AI Link complete visible NPC dialogue without combat",
     )
     result.add_argument(
+        "--autoplay-human-portal",
+        action="store_true",
+        help="move P1 to the free portal pad after all three bots form one group",
+    )
+    result.add_argument(
         "--smoke",
         action="store_true",
         help="boot four linked consoles and exit without calling Vertex or neatlogs",
@@ -290,6 +295,11 @@ def main(argv: list[str] | None = None) -> int:
                     on_team_target_lost=(
                         target_navigator.prepare_portal_repair
                         if target_navigator is not None
+                        else None
+                    ),
+                    human_warp_plan=(
+                        target_navigator.human_portal_action
+                        if target_navigator is not None and args.autoplay_human_portal
                         else None
                     ),
                     gameplay_detector=(
