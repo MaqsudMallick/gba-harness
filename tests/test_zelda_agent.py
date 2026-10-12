@@ -13,6 +13,7 @@ from gbharness.agent.zelda import (
     _player_near_teammate,
     _target_grids,
     _visible_reached_teammate_step,
+    _visible_team_rejoin_step,
     _visible_wall_opening,
     bootstrap_four_swords,
     first_training_reward_visible,
@@ -135,6 +136,16 @@ def test_four_swords_npc_adjacent_uses_p2_visible_pixels() -> None:
     rgb[68:78, 354:364] = (222, 40, 165)
     views = tuple(split_player_frames(frame(), 4))
     assert four_swords_npc_adjacent(views)
+
+
+def test_isolated_bot_rejoins_the_visible_green_link() -> None:
+    rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+    rgb[60:66, 116:125] = (245, 190, 35)
+    rgb[67:81, 116:125] = (30, 70, 220)
+    rgb[121:127, 166:175] = (245, 190, 35)
+    rgb[128:142, 166:175] = (35, 145, 45)
+
+    assert _visible_team_rejoin_step(rgb, 2, (120, 84)) == ("move_down",)
 
 
 def test_visual_target_plan_moves_red_scout_to_detected_orange_tile() -> None:
@@ -312,13 +323,18 @@ def test_visual_target_navigator_locks_distinct_targets_and_waits_on_arrival() -
         ((120, 88),),
     )
     group_repair = FourSwordsVisualTargetNavigator(probe_reached=True)
+    group_repair.portal_search_started = True
     group_repair.reached_players.update((1, 2, 3))
     group_repair.forward_grid_players.update((1, 2, 3))
     group_repair.assignments.update({1: 3, 2: 0, 3: 2})
-    group_repair.prepare_portal_repair(tuple(wrong_group_views))
+    assert not group_repair.all_assigned_players_reached(tuple(wrong_group_views))
+    assert group_repair.reached_players == {1, 2, 3}
+    assert not group_repair.all_assigned_players_reached(tuple(wrong_group_views))
+    assert group_repair.reached_players == {1, 2, 3}
+    assert not group_repair.all_assigned_players_reached(tuple(wrong_group_views))
 
     assert group_repair.reached_players == {1, 3}
-    assert 2 in group_repair.leaving_return_players
+    assert 2 in group_repair.seeking_team_players
     assert 2 not in group_repair.forward_grid_players
 
     human_view = view(

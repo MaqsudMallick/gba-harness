@@ -208,6 +208,9 @@ class FourSwordsVisualTargetNavigator:
     near_players: set[int] = field(default_factory=set)
     leaving_return_players: set[int] = field(default_factory=set)
     forward_grid_players: set[int] = field(default_factory=set)
+    seeking_team_players: set[int] = field(default_factory=set)
+    team_search_actions: dict[int, str] = field(default_factory=dict)
+    group_mismatch_counts: dict[int, int] = field(default_factory=dict)
     reached_misses: dict[int, int] = field(default_factory=dict)
     return_grid_absent_counts: dict[int, int] = field(default_factory=dict)
     cleared_return_players: set[int] = field(default_factory=set)
@@ -231,6 +234,9 @@ class FourSwordsVisualTargetNavigator:
         self.near_players.clear()
         self.leaving_return_players.clear()
         self.forward_grid_players.clear()
+        self.seeking_team_players.clear()
+        self.team_search_actions.clear()
+        self.group_mismatch_counts.clear()
         self.reached_misses.clear()
         self.return_grid_absent_counts.clear()
         self.cleared_return_players.clear()
@@ -280,6 +286,23 @@ class FourSwordsVisualTargetNavigator:
             rgb = to_rgb(views[player])
             position = _link_position(rgb, player) or (120, 88)
             active_targets = _active_target_centres(rgb)
+            if player in self.seeking_team_players:
+                strongest_grid, strongest_occupancy = _strongest_active_grid(rgb)
+                if strongest_grid is not None and strongest_occupancy >= 2:
+                    self.seeking_team_players.discard(player)
+                    self.team_search_actions.pop(player, None)
+                    self.forward_grid_players.add(player)
+                    grid = strongest_grid
+                else:
+                    rejoin_step = _visible_team_rejoin_step(rgb, player, position)
+                    if rejoin_step is not None:
+                        self.team_search_actions[player] = rejoin_step[0]
+                        plans[player] = rejoin_step
+                    else:
+                        plans[player] = (
+                            self.team_search_actions.get(player, "move_down"),
+                        )
+                    continue
             if player == 1 and self.probe_reached:
                 self.reached_players.add(player)
                 self.reached_misses[player] = 0
@@ -519,10 +542,25 @@ class FourSwordsVisualTargetNavigator:
             plans.get(player) == ("wait",) for player in (1, 2, 3)
         )
         if not individually_reached:
+            self.group_mismatch_counts.clear()
             return False
         if self.assigned_players_still_reached(views):
+            self.group_mismatch_counts.clear()
             return True
+        occupancies = {
+            player: _active_grid_occupancy(to_rgb(views[player]), player)
+            for player in (1, 2, 3)
+        }
+        strongest_group = max(occupancies.values(), default=0)
+        for player, occupancy in occupancies.items():
+            mismatch = strongest_group >= 2 and 0 < occupancy < strongest_group
+            self.group_mismatch_counts[player] = (
+                self.group_mismatch_counts.get(player, 0) + 1 if mismatch else 0
+            )
+        if max(self.group_mismatch_counts.values(), default=0) < 3:
+            return False
         self.prepare_portal_repair(views)
+        self.group_mismatch_counts.clear()
         return False
 
     def assigned_players_still_reached(self, views: tuple[RawFrame, ...]) -> bool:
@@ -560,10 +598,15 @@ class FourSwordsVisualTargetNavigator:
             self.assignments.pop(player, None)
             self.tracked_targets.pop(player, None)
             if wrong_group:
-                self.leaving_return_players.add(player)
+                self.seeking_team_players.add(player)
                 self.forward_grid_players.discard(player)
-                self.cleared_return_players.discard(player)
-                self.return_grid_absent_counts[player] = 0
+                rejoin_step = _visible_team_rejoin_step(
+                    to_rgb(views[player]),
+                    player,
+                    _link_position(to_rgb(views[player]), player) or (120, 88),
+                )
+                if rejoin_step is not None:
+                    self.team_search_actions[player] = rejoin_step[0]
             else:
                 self.leaving_return_players.discard(player)
                 self.forward_grid_players.add(player)
@@ -663,6 +706,46 @@ def _active_grid_occupancy(rgb: np.ndarray, player: int) -> int:
         if any(_squared_distance(position, target) <= 18 * 18 for target in grid)
     ]
     return max(occupancies, default=0)
+
+
+def _strongest_active_grid(
+    rgb: np.ndarray,
+) -> tuple[tuple[tuple[int, int], ...] | None, int]:
+    """Find the visible portal grid with the most active pads."""
+    active_targets = _active_target_centres(rgb)
+    targets = _merge_target_centres(_orange_target_centres(rgb), active_targets)
+    candidates = [
+        (
+            sum(
+                any(_squared_distance(target, active) <= 12 * 12 for active in active_targets)
+                for target in grid
+            ),
+            grid,
+        )
+        for grid in _target_grids(targets)
+    ]
+    if not candidates:
+        return None, 0
+    occupancy, grid = max(candidates, key=lambda candidate: candidate[0])
+    return grid, occupancy
+
+
+def _visible_team_rejoin_step(
+    rgb: np.ndarray,
+    player: int,
+    position: tuple[int, int],
+) -> tuple[str, ...] | None:
+    """Move an isolated bot toward a visible teammate without a fixed route."""
+    for teammate in (0, 1, 2, 3):
+        if teammate == player:
+            continue
+        teammate_position = _link_position(rgb, teammate)
+        if teammate_position is None:
+            continue
+        if _squared_distance(position, teammate_position) <= 28 * 28:
+            continue
+        return _precision_route_step(position, teammate_position)
+    return None
 
 
 def _private_dialogue_visible(rgb: np.ndarray) -> bool:
