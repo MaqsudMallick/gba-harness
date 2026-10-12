@@ -85,6 +85,11 @@ def parser() -> argparse.ArgumentParser:
         help="move P1 to the free portal pad after all three bots form one group",
     )
     result.add_argument(
+        "--autoplay-human-navigation",
+        action="store_true",
+        help="let screenshot navigation control P1 during unattended validation",
+    )
+    result.add_argument(
         "--complete-after-room-transition",
         action="store_true",
         help="finish after the first verified portal transition",
@@ -263,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                         confidence_threshold=settings.confidence_threshold,
                         max_consecutive_errors=args.max_consecutive_errors,
                         autoplay_human_dialogue=False,
+                        autoplay_human_navigation=args.autoplay_human_navigation,
                         continue_after_team_target=bool(
                             human_player and target_navigator is not None
                         ),

@@ -273,6 +273,13 @@ def test_post_portal_room_allows_visible_combat_actions() -> None:
             "scene": "three lanes with visible enemies",
             "stage": "explore_room",
             "objective": "clear each lane",
+            "room_map": "Four separate lanes contain visible targets.",
+            "human_plan": ["move_down"],
+            "player_1_target": "P1 target in the left lane",
+            "player_2_target": "P2 target in the second lane",
+            "player_3_target": "P3 target in the third lane",
+            "player_4_target": "P4 target in the right lane",
+            "replan_trigger": "a target disappears or a Link stops moving",
             "player_2_plan": ["move_down", "attack_down"],
             "player_3_plan": ["attack_down"],
             "player_4_plan": ["move_down", "use_sword"],
@@ -300,7 +307,8 @@ def test_post_portal_room_allows_visible_combat_actions() -> None:
     decision = team.decide_team(request)
 
     assert decision.stage == "explore_room"
-    assert decision.human_instruction == "P1 remains human-controlled."
+    assert decision.human_instruction == "P1 target in the left lane"
+    assert decision.human_plan == ("move_down",)
     assert decision.plans[1] == ("move_down", "attack_down")
     assert decision.plans[2] == ("attack_down",)
     assert decision.plans[3] == ("move_down", "use_sword")
@@ -308,4 +316,47 @@ def test_post_portal_room_allows_visible_combat_actions() -> None:
     assert schema["properties"]["stage"]["enum"] == ["explore_room"]
     assert "npc_actor_player" not in schema["properties"]
     assert "human_instruction" not in schema["properties"]
+    assert "human_plan" in schema["properties"]
     assert "Do not return through the entrance portal" in models.kwargs["contents"][0]
+
+
+def test_parallel_lanes_can_use_the_same_direction() -> None:
+    models = FakeModels(
+        {
+            "scene": "four separate lanes",
+            "stage": "explore_room",
+            "objective": "reach one visible target in each lane",
+            "room_map": "Each Link is in a separate vertical lane.",
+            "human_plan": ["move_down"],
+            "player_1_target": "left lane target",
+            "player_2_target": "second lane target",
+            "player_3_target": "third lane target",
+            "player_4_target": "right lane target",
+            "player_2_plan": ["move_down"],
+            "player_3_plan": ["move_down"],
+            "player_4_plan": ["move_down"],
+            "replan_trigger": "one target disappears",
+            "confidence": 0.9,
+            "terminal": False,
+            "note": "Each Link moves inside its separate lane.",
+        }
+    )
+    team = VertexTeamDecisionProvider((provider("gemini", models),), navigation_only=True)
+    request = TeamDecisionRequest(
+        goal="solve the visible room",
+        state="four Links entered separate lanes",
+        image_png=b"composite",
+        actions=(ActionOption("move_down", "down"), ActionOption("wait", "wait")),
+        ai_players=(1, 2, 3),
+        turn=1,
+        stage="explore_room",
+    )
+
+    decision = team.decide_team(request)
+
+    assert decision.human_plan == ("move_down",)
+    assert decision.plans == {
+        1: ("move_down",),
+        2: ("move_down",),
+        3: ("move_down",),
+    }

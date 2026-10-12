@@ -219,9 +219,6 @@ class FourSwordsVisualTargetNavigator:
     active_frames: dict[int, int] = field(default_factory=dict)
     probe_reached: bool = False
     dialogue_attempts: int = 0
-    explore_switch_player: int | None = None
-    explore_switch_target: tuple[int, int] | None = None
-    explore_switch_reached: bool = False
 
     def reset(self) -> None:
         """Clear first-room visual state before the team enters a new room."""
@@ -242,9 +239,6 @@ class FourSwordsVisualTargetNavigator:
         self.active_frames.clear()
         self.probe_reached = False
         self.dialogue_attempts = 0
-        self.explore_switch_player = None
-        self.explore_switch_target = None
-        self.explore_switch_reached = False
 
     def __call__(
         self,
@@ -428,75 +422,8 @@ class FourSwordsVisualTargetNavigator:
         self,
         views: tuple[RawFrame, ...],
     ) -> dict[int, tuple[str, ...]]:
-        """Move one scout to a visible lane switch and keep followers still."""
-        if len(views) < 4:
-            return {}
-
-        switch_plan = self._visible_lane_switch_plan(views)
-        if switch_plan is not None:
-            return {
-                1: switch_plan if self.explore_switch_player == 1 else ("wait",),
-                2: switch_plan if self.explore_switch_player == 2 else ("wait",),
-                3: switch_plan if self.explore_switch_player == 3 else ("wait",),
-            }
-
-        # A camera change does not prove that the scout found a valid target.
-        # Keep every bot still until screenshot vision identifies one.
-        return {1: ("wait",), 2: ("wait",), 3: ("wait",)}
-
-    def _visible_lane_switch_plan(
-        self,
-        views: tuple[RawFrame, ...],
-    ) -> tuple[str, ...] | None:
-        """Route one bot to a gray switch in its current visible lane."""
-        if self.explore_switch_player is None:
-            for player in (1, 2, 3):
-                rgb = to_rgb(views[player])
-                position = _link_position(rgb, player)
-                if position is None:
-                    continue
-                targets = tuple(
-                    target
-                    for target in _gray_switch_centres(rgb)
-                    if abs(target[0] - position[0]) <= 18
-                )
-                if not targets:
-                    continue
-                origin = position
-                self.explore_switch_player = player
-                self.explore_switch_target = min(
-                    targets,
-                    key=lambda target: _squared_distance(origin, target),
-                )
-                break
-
-        selected_player = self.explore_switch_player
-        target = self.explore_switch_target
-        if selected_player is None or target is None:
-            return None
-        rgb = to_rgb(views[selected_player])
-        position = _link_position(rgb, selected_player)
-        if position is None:
-            return ("wait",)
-
-        aligned_targets = tuple(
-            candidate
-            for candidate in _gray_switch_centres(rgb)
-            if abs(candidate[0] - position[0]) <= 18
-        )
-        if aligned_targets:
-            target = min(
-                aligned_targets,
-                key=lambda candidate: _squared_distance(position, candidate),
-            )
-            self.explore_switch_target = target
-
-        if _squared_distance(position, target) <= 13 * 13:
-            self.explore_switch_reached = True
-            return ("wait",)
-        if self.explore_switch_reached:
-            return ("wait",)
-        return _precision_route_step(position, target)
+        """Let the team model discover and plan the visible room."""
+        return {}
 
     def _reach_npc_plan(
         self,
@@ -968,27 +895,6 @@ def _orange_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
     return tuple(centres)
 
 
-def _gray_switch_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
-    """Find square gray floor switches from visible neutral pixels."""
-    maximum = np.max(rgb, axis=2)
-    minimum = np.min(rgb, axis=2)
-    mask = (
-        (maximum - minimum <= 16)
-        & (maximum >= 155)
-        & (maximum <= 240)
-    )
-    centres: list[tuple[int, int]] = []
-    for xs, ys in _components(mask):
-        width = int(xs.max() - xs.min() + 1)
-        height = int(ys.max() - ys.min() + 1)
-        if len(xs) < 140 or not 12 <= width <= 20 or not 10 <= height <= 20:
-            continue
-        if int(ys.min()) < 20:
-            continue
-        centres.append((int(np.mean(xs)), int(np.mean(ys))))
-    return tuple(centres)
-
-
 def _active_target_centres(rgb: np.ndarray) -> tuple[tuple[int, int], ...]:
     red = rgb[:, :, 0]
     green = rgb[:, :, 1]
@@ -1255,8 +1161,8 @@ def _link_position(rgb: np.ndarray, player: int) -> tuple[int, int] | None:
         x0 = max(0, int(xs.min()) - 10)
         x1 = min(rgb.shape[1], int(xs.max()) + 11)
         y0 = max(0, int(ys.min()) - 14)
-        y1 = min(rgb.shape[0], int(ys.max()) + 9)
-        if int(np.count_nonzero(yellow[y0:y1, x0:x1])) < 4:
+        y1 = min(rgb.shape[0], int(ys.min()) + 3)
+        if int(np.count_nonzero(yellow[y0:y1, x0:x1])) < 18:
             continue
         x = int(np.mean(xs))
         y = int(np.mean(ys))

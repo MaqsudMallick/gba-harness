@@ -131,6 +131,16 @@ class VertexTeamDecisionProvider:
                 {
                     "room_map": {"type": "string"},
                     "replan_trigger": {"type": "string"},
+                    "human_plan": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": human_allowed},
+                        "minItems": 1,
+                        "maxItems": 6,
+                    },
+                    "player_1_target": {
+                        "type": "string",
+                        "description": "One visible landmark for P1.",
+                    },
                     **{
                         key: {
                             "type": "string",
@@ -142,7 +152,15 @@ class VertexTeamDecisionProvider:
                     },
                 }
             )
-            common_required.extend(["room_map", *explore_target_keys, "replan_trigger"])
+            common_required.extend(
+                [
+                    "room_map",
+                    "human_plan",
+                    "player_1_target",
+                    *explore_target_keys,
+                    "replan_trigger",
+                ]
+            )
         if guided_navigation:
             common_properties.update(
                 {
@@ -197,19 +215,21 @@ class VertexTeamDecisionProvider:
                     "Maintain a short visual map in room_map. Record each bot's relative "
                     "area, the entrance, visible openings, NPCs, obstacles, and candidate "
                     "exits. Preserve confirmed map facts from the shared state. Identify "
-                    "the immediate cooperative obstacle. Give P2, P3, and P4 short "
-                    "screen-relative plans of three to six actions when the route is clear. "
+                    "the immediate cooperative obstacle. Give all four Links short "
+                    "screen-relative plans of one to six actions. Put the recommended P1 "
+                    "actions in human_plan. The runtime executes that plan only during "
+                    "unattended validation. "
                     "Set one persistent visible landmark for each bot in player_N_target. "
                     "Prefer a door, wall opening, stairs, corridor end, floor switch, or "
                     "collectible that leads away from the entrance. State the visual event "
                     "that requires a new plan in replan_trigger. Keep stage=explore_room. "
-                    "P1 is human. "
-                    "Assign distinct landmarks or lanes to the three bots. Do not make a "
-                    "follower trace the scout route when the scout occupies its endpoint. "
+                    "Assign one visible landmark or lane to each Link. Different Links can "
+                    "use the same direction when they are in separate parallel lanes. Do not "
+                    "make a follower trace the scout route when the scout occupies its endpoint. "
                     "Keep a follower still when it is within one character width of a "
                     "stationary teammate. Move the scout aside before a follower enters a "
                     "narrow shared corridor. "
-                    "Give no automated P1 plan. Set terminal=true only when the screenshot "
+                    "Set terminal=true only when the screenshot "
                     "shows that the room objective is complete. Do not use a walkthrough. "
                     "A two-by-two group of four large circles with a centre character or "
                     "symbol is a warp grid, not a pressure-plate puzzle. Do not return "
@@ -272,9 +292,10 @@ class VertexTeamDecisionProvider:
             "Return one coordinated plan of one to six actions for every AI player. "
             "Plans must be complementary. Do not send separated Links repeatedly into a "
             "visible wall. If two Links already occupy targets, keep them there while the "
-            "other Links route to different targets. P1 is human-controlled. Never assign "
-            "an automated plan to P1. Use the designated AI Link for NPC dialogue. Do not "
-            "use an attack action for dialogue."
+            "other Links route to different targets. P1 is human-controlled during normal "
+            "use. In explore_room, return its recommended validation plan. Outside that "
+            "stage, do not assign P1 an automated plan. Use the designated AI Link for NPC "
+            "dialogue. Do not use an attack action for dialogue."
         )
         trace_input = {
             "model": provider.model,
@@ -317,8 +338,11 @@ class VertexTeamDecisionProvider:
         model_objective = str(payload.get("objective", "coordinate the current room"))
         if self.navigation_only and stage == "explore_room":
             targets = "; ".join(
-                f"P{player + 1}={payload.get(f'player_{player + 1}_target', 'unassigned')}"
-                for player in request.ai_players
+                [f"P1={payload.get('player_1_target', 'unassigned')}"]
+                + [
+                    f"P{player + 1}={payload.get(f'player_{player + 1}_target', 'unassigned')}"
+                    for player in request.ai_players
+                ]
             )
             objective = (
                 f"{model_objective} Map: {payload.get('room_map', 'unknown')}. "
@@ -353,14 +377,6 @@ class VertexTeamDecisionProvider:
                     plan = (facing, "interact", "wait", "wait", "wait", "wait")
             if self.navigation_only and stage == "probe_target" and player != npc_actor:
                 plan = ("wait",)
-            if (
-                self.navigation_only
-                and stage == "explore_room"
-                and player != npc_actor
-                and plan == plans.get(npc_actor)
-                and any(action != "wait" for action in plan)
-            ):
-                plan = ("wait",)
             plans[player] = plan
             decisions[player] = Decision(
                 action=plan[0],
@@ -375,12 +391,16 @@ class VertexTeamDecisionProvider:
         input_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
         output_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
         human_plan = (
-            ()
+            _action_plan(payload.get("human_plan"), human_allowed, 1)
+            if self.navigation_only and stage == "explore_room"
+            else ()
             if self.navigation_only
             else _action_plan(payload.get("human_dialogue_plan"), human_allowed, 1)
         )
         human_instruction = (
-            "P1 remains human-controlled."
+            str(payload.get("player_1_target", "P1 remains human-controlled."))
+            if self.navigation_only and stage == "explore_room"
+            else "P1 remains human-controlled."
             if self.navigation_only
             else str(payload.get("human_instruction", ""))
         )

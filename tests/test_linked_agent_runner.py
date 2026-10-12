@@ -460,6 +460,39 @@ def test_npc_autopilot_executes_only_the_captains_human_dialogue_plan() -> None:
     assert result.turns[0].players[0].plan == ("interact",)
 
 
+def test_visual_navigation_can_control_human_player_during_validation() -> None:
+    source = HumanActionSource()
+    captain = FakeTeamProvider()
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    result = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, StaticComposite()),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(
+            max_turns=1,
+            max_model_calls=1,
+            autoplay_human_navigation=True,
+        ),
+        team_provider=captain,
+        visual_plan_override=lambda _stage, _views: {0: ("move_down",)},
+    ).run()
+
+    assert result.turns[0].players[0].plan == ("move_down",)
+
+
 def test_visual_dialogue_close_advances_to_single_scout_stage() -> None:
     source = HumanActionSource()
     captain = FakeTeamProvider(stage="advance_dialogue")
