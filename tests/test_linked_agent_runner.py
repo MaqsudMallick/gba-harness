@@ -709,6 +709,30 @@ def test_human_portal_transition_resumes_one_shared_model() -> None:
     assert result.turns[-1].team_stage == "explore_room"
 
 
+def test_portal_transition_resumes_room_agent_before_bots_are_marked_ready() -> None:
+    captain = FakeTeamProvider(stage="reach_warps")
+    reset_calls: list[bool] = []
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(FrameLatch, SequenceComposite([255, 0, 255, 255, 255, 255])),
+        assignments=assignments([[Decision("wait", 1.0, "unused")] for _ in range(4)]),
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(max_turns=3, max_model_calls=3),
+        team_provider=captain,
+        visual_plan_override=lambda _stage, _views: {},
+        team_target_detector=lambda _views: False,
+        gameplay_detector=lambda frame: frame.data[0] == 255,
+        on_next_room=lambda: reset_calls.append(True),
+    )
+    runner._team_stage = "reach_warps"
+
+    result = runner.run()
+
+    assert captain.requests[-1].stage == "explore_room"
+    assert reset_calls == [True]
+    assert result.turns[-1].team_stage == "explore_room"
+
+
 def test_human_portal_transition_can_complete_one_puzzle() -> None:
     source = HumanActionSource()
     source.submit("move_up")

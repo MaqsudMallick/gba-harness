@@ -146,6 +146,8 @@ class LinkedAgentRunner:
     _cached_team_stage: str = field(default="", init=False, repr=False)
     _cached_team_uses: int = field(default=0, init=False, repr=False)
     _warp_reference: tuple[np.ndarray, ...] | None = field(default=None, init=False, repr=False)
+    _portal_transition_seen: bool = field(default=False, init=False, repr=False)
+    _portal_gameplay_seen: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         players = self.session.port.players
@@ -216,6 +218,31 @@ class LinkedAgentRunner:
                 )
                 self._dialogue_seen = self._dialogue_seen or dialogue_before
                 views = split_player_frames(composite, len(self.assignments))
+                if self._team_stage == "reach_warps" and self.gameplay_detector is not None:
+                    gameplay_visible = self.gameplay_detector(composite)
+                    if gameplay_visible:
+                        self._portal_gameplay_seen = True
+                    elif self._portal_gameplay_seen:
+                        self._portal_transition_seen = True
+                        self.session.submit(
+                            {
+                                assignment.player: self.policy.resolve("wait")
+                                for assignment in self.assignments
+                                if assignment.participant_type == "agent"
+                            }
+                        )
+                        if self.on_stage_change is not None:
+                            self.on_stage_change("ROOM TRANSITION — waiting for a stable game view")
+                        continue
+                    if self._portal_transition_seen:
+                        if self.config.complete_after_room_transition:
+                            self._team_stage = "complete"
+                            status = "completed"
+                            break
+                        self._resume_after_room_transition()
+                        previous_views = [None] * len(self.assignments)
+                        repeated = [0] * len(self.assignments)
+                        continue
                 if (
                     self._team_stage == "reach_npc"
                     and self.npc_reached_detector is not None
@@ -267,21 +294,9 @@ class LinkedAgentRunner:
                             "A visible room transition completed the portal puzzle"
                         )
                         break
-                    self._team_stage = "explore_room"
-                    self._cached_team_outcomes = None
-                    self._cached_team_stage = ""
-                    self._cached_team_uses = 0
-                    self._team_plans = {}
-                    self._team_human_plan = ()
-                    self._team_objective = "Inspect and solve the new visible room."
-                    self._dialogue_seen = False
+                    self._resume_after_room_transition()
                     previous_views = [None] * len(self.assignments)
                     repeated = [0] * len(self.assignments)
-                    if self.on_next_room is not None:
-                        self.on_next_room()
-                    if self.on_stage_change is not None:
-                        self.on_stage_change("NEXT ROOM — one shared Gemini model is planning")
-                    self.telemetry.log("The visible room changed; the shared team model resumed")
                     continue
 
                 if (
@@ -534,6 +549,13 @@ class LinkedAgentRunner:
                     for index, assignment in enumerate(self.assignments)
                 )
                 after_frame = self.frames.require()
+                if (
+                    self._team_stage == "reach_warps"
+                    and self.gameplay_detector is not None
+                    and self._portal_gameplay_seen
+                    and not self.gameplay_detector(after_frame)
+                ):
+                    self._portal_transition_seen = True
                 after_views = split_player_frames(after_frame, len(self.assignments))
                 after_rgbs = tuple(to_rgb(view) for view in after_views)
                 after_pngs = tuple(to_png(view) for view in after_views)
@@ -1147,6 +1169,25 @@ class LinkedAgentRunner:
         if candidate <= current:
             return self._team_stage
         return stages[min(current + 1, len(stages) - 1)]
+
+    def _resume_after_room_transition(self) -> None:
+        """Reset team state after the game shows a new room."""
+        self._team_stage = "explore_room"
+        self._cached_team_outcomes = None
+        self._cached_team_stage = ""
+        self._cached_team_uses = 0
+        self._team_plans = {}
+        self._team_human_plan = ()
+        self._team_objective = "Inspect and solve the new visible room."
+        self._dialogue_seen = False
+        self._warp_reference = None
+        self._portal_transition_seen = False
+        self._portal_gameplay_seen = False
+        if self.on_next_room is not None:
+            self.on_next_room()
+        if self.on_stage_change is not None:
+            self.on_stage_change("NEXT ROOM — one shared Gemini model is planning")
+        self.telemetry.log("The visible room changed; the shared team model resumed")
 
     def _wait_for_human_warp(self) -> HumanWarpWaitResult:
         """Keep the AI Links still until P1 causes a visible room transition."""
