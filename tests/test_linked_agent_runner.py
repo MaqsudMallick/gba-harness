@@ -762,7 +762,7 @@ def test_human_portal_transition_can_complete_one_puzzle() -> None:
     assert result.turns[-1].team_stage == "wait_for_human_warp"
 
 
-def test_human_portal_wait_repairs_after_three_idle_invalid_frames() -> None:
+def test_human_portal_wait_does_not_treat_a_large_camera_change_as_transition() -> None:
     source = HumanActionSource()
     source.submit("move_right")
     assigned = (
@@ -781,7 +781,7 @@ def test_human_portal_wait_repairs_after_three_idle_invalid_frames() -> None:
     lost_views: list[tuple[RawFrame, ...]] = []
     runner = LinkedAgentRunner(
         session=LinkedSession(RecordingPort()),
-        frames=cast(FrameLatch, StaticComposite()),
+        frames=cast(FrameLatch, SequenceComposite([255, 255, 255, 255, 255])),
         assignments=assigned,
         policy=FOUR_SWORDS_POLICY,
         config=LinkedRunnerConfig(max_turns=1, max_model_calls=1),

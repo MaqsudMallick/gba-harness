@@ -1186,17 +1186,13 @@ class LinkedAgentRunner:
             transition_seen = transition_seen or not gameplay_visible
             current_views = split_player_frames(current, len(self.assignments))
             current_rgbs = tuple(to_rgb(view) for view in current_views)
-            changed_views = sum(
-                _visual_change_fraction(before, after) >= 0.18
-                for before, after in zip(self._warp_reference, current_rgbs, strict=True)
-            )
             if action is not None:
                 self.telemetry.log(
                     "P{player} human portal action {action}",
                     player=human.player + 1,
                     action=submitted,
                 )
-            if gameplay_visible and (transition_seen or changed_views >= 3):
+            if gameplay_visible and transition_seen:
                 self._warp_reference = None
                 return "transition"
             stable = (
