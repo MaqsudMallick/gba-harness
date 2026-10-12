@@ -540,8 +540,23 @@ class FourSwordsVisualTargetNavigator:
         rgb = to_rgb(views[1])
         if _private_dialogue_visible(rgb):
             self.dialogue_attempts = 0
+            page = _dialogue_page_mask(rgb)
+            repeats_earlier_page = len(self.explore_dialogue_pages) >= 4 and any(
+                _dialogue_pages_match(page, earlier)
+                for earlier in self.explore_dialogue_pages[:-1]
+            )
+            repeats_last_page = bool(self.explore_dialogue_pages) and _dialogue_pages_match(
+                page,
+                self.explore_dialogue_pages[-1],
+            )
+            if repeats_earlier_page:
+                self.explore_dialogue_pages.clear()
+                return {1: ("use_sword", "wait", "wait", "wait", "wait", "wait")}
+            if not repeats_last_page:
+                self.explore_dialogue_pages.append(page)
             return {1: ("advance_text", "wait", "wait", "wait", "wait", "wait")}
 
+        self.explore_dialogue_pages.clear()
         self.dialogue_attempts += 1
         if self.dialogue_attempts >= 3:
             self.dialogue_attempts = 0
