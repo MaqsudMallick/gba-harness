@@ -204,7 +204,7 @@ def test_navigation_mode_uses_one_scout_and_does_not_skip_stages() -> None:
     assert decision.plans[1] == ("move_down", "interact")
     assert decision.plans[2] == ("wait",)
     assert decision.plans[3] == ("wait",)
-    assert models.kwargs["contents"][1].inline_data.data == b"p2"
+    assert models.kwargs["contents"][1].inline_data.data == b"composite"
     schema = models.kwargs["config"].response_json_schema
     assert "human_dialogue_plan" not in schema["properties"]
     assert "human_instruction" not in schema["properties"]
@@ -222,7 +222,7 @@ def test_navigation_mode_uses_one_scout_and_does_not_skip_stages() -> None:
         stage="probe_target",
     )
     team.decide_team(probe_request)
-    assert models.kwargs["contents"][1].inline_data.data == b"p2"
+    assert models.kwargs["contents"][1].inline_data.data == b"composite"
 
 
 def test_navigation_mode_waits_for_visible_dialogue_text() -> None:
@@ -428,8 +428,8 @@ def test_explore_room_holds_followers_while_scouting() -> None:
     decision = team.decide_team(request)
 
     assert decision.plans == {1: ("move_up",), 2: ("wait",), 3: ("wait",)}
-    assert models.kwargs["contents"][1].inline_data.data == request.player_images[1]
-    assert "P2 is the red Link" in models.kwargs["contents"][0]
+    assert models.kwargs["contents"][1].inline_data.data == request.image_png
+    assert "Attached observation: four-player composite view" in models.kwargs["contents"][0]
 
 
 def test_explore_room_finishes_npc_dialogue_before_team_actions() -> None:

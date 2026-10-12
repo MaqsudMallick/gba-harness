@@ -267,6 +267,7 @@ class LinkedAgentRunner:
                 pngs = tuple(to_png(view) for view in views)
                 for player, rgb in enumerate(rgbs):
                     previous = previous_views[player]
+                    previous_position = previous_positions[player]
                     position = (
                         self.player_position_detector(rgb, player)
                         if self.player_position_detector is not None
@@ -274,9 +275,9 @@ class LinkedAgentRunner:
                         else None
                     )
                     position_is_stable = (
-                        previous_positions[player] is not None
+                        previous_position is not None
                         and position is not None
-                        and _positions_match(previous_positions[player], position)
+                        and _positions_match(previous_position, position)
                     )
                     view_is_stable = (
                         previous is not None and not _meaningful_visual_change(previous, rgb)
@@ -286,7 +287,7 @@ class LinkedAgentRunner:
                         if position_is_stable
                         or (
                             position is None
-                            and previous_positions[player] is None
+                            and previous_position is None
                             and view_is_stable
                         )
                         else 0
@@ -358,18 +359,10 @@ class LinkedAgentRunner:
                     for assignment in self.assignments
                 )
                 cached_team_outcomes = self._cached_team_outcomes
-                ai_repeated = tuple(
-                    repeated[assignment.player]
-                    for assignment in self.assignments
-                    if assignment.participant_type == "agent"
-                )
-                explore_cache_valid = (
-                    self._team_stage != "explore_room"
-                    or (
-                        self._cached_team_uses < 3
-                        and (not ai_repeated or max(ai_repeated) < 2)
-                    )
-                )
+                # Exploration and cooperative portal placement require a new visual
+                # decision after each controller batch. A cached plan can become unsafe
+                # when a Link moves, is displaced, or changes rooms.
+                explore_cache_valid = self._team_stage not in {"explore_room", "reach_warps"}
                 reuse_team_plan = (
                     self.team_provider is not None
                     and self.visual_plan_override is not None

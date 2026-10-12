@@ -225,6 +225,7 @@ class FourSwordsVisualTargetNavigator:
     dialogue_attempts: int = 0
     explore_dialogue_was_visible: bool = False
     explore_npc_cooldown: int = 0
+    explore_dialogue_pages: list[np.ndarray] = field(default_factory=list, repr=False)
 
     def reset(self) -> None:
         """Clear first-room visual state before the team enters a new room."""
@@ -249,6 +250,7 @@ class FourSwordsVisualTargetNavigator:
         self.dialogue_attempts = 0
         self.explore_dialogue_was_visible = False
         self.explore_npc_cooldown = 0
+        self.explore_dialogue_pages.clear()
 
     def __call__(
         self,
@@ -342,10 +344,18 @@ class FourSwordsVisualTargetNavigator:
                     continue
                 if (
                     player != 1
-                    and not self.probe_reached
                     and not _scout_occupies_grid(rgb, confirmed_grid)
                 ):
-                    plans[player] = _forward_exploration_step(rgb, position)
+                    teammate_step = _visible_reached_teammate_step(
+                        rgb,
+                        player,
+                        position,
+                        self.reached_players,
+                    )
+                    plans[player] = teammate_step or _forward_exploration_step(
+                        rgb,
+                        position,
+                    )
                     continue
                 self.leaving_return_players.discard(player)
                 self.forward_grid_players.add(player)
@@ -441,10 +451,25 @@ class FourSwordsVisualTargetNavigator:
         rgb = to_rgb(views[1])
         if _private_dialogue_visible(rgb):
             self.explore_dialogue_was_visible = True
+            page = _dialogue_page_mask(rgb)
+            repeats_earlier_page = len(self.explore_dialogue_pages) >= 4 and any(
+                _dialogue_pages_match(page, earlier)
+                for earlier in self.explore_dialogue_pages[:-1]
+            )
+            repeats_last_page = bool(self.explore_dialogue_pages) and _dialogue_pages_match(
+                page,
+                self.explore_dialogue_pages[-1],
+            )
+            if repeats_earlier_page:
+                self.explore_dialogue_pages.clear()
+                return {1: ("use_sword", "wait", "wait", "wait", "wait", "wait")}
+            if not repeats_last_page:
+                self.explore_dialogue_pages.append(page)
             return {1: ("advance_text", "wait", "wait", "wait", "wait", "wait")}
         if self.explore_dialogue_was_visible:
             self.explore_dialogue_was_visible = False
             self.explore_npc_cooldown = 8
+            self.explore_dialogue_pages.clear()
             return {}
         if self.explore_npc_cooldown:
             self.explore_npc_cooldown -= 1
@@ -868,6 +893,19 @@ def _private_dialogue_visible(rgb: np.ndarray) -> bool:
     region = rgb[92:148, 4:236]
     dark = np.max(region, axis=2) < 45
     return float(np.count_nonzero(dark)) / float(dark.size) >= 0.45
+
+
+def _dialogue_page_mask(rgb: np.ndarray) -> np.ndarray:
+    """Return the visible text pixels without the dialogue border."""
+    text = rgb[98:140, 12:220]
+    return np.max(text, axis=2) > 145
+
+
+def _dialogue_pages_match(first: np.ndarray, second: np.ndarray) -> bool:
+    """Return true when two captured dialogue pages show the same text."""
+    if first.shape != second.shape:
+        return False
+    return int(np.count_nonzero(first != second)) <= 96
 
 
 def _pink_npc_offset(rgb: np.ndarray) -> tuple[int, int] | None:

@@ -420,7 +420,7 @@ def test_blocked_repeated_attack_stops_until_the_scene_changes() -> None:
     ]
 
 
-def test_room_plan_is_reused_until_visual_stagnation_requires_replanning() -> None:
+def test_room_plan_is_replanned_after_each_exploration_batch() -> None:
     source = HumanActionSource()
     captain = FakeTeamProvider(stage="explore_room")
     assigned = (
@@ -441,7 +441,7 @@ def test_room_plan_is_reused_until_visual_stagnation_requires_replanning() -> No
         frames=cast(FrameLatch, StaticComposite()),
         assignments=assigned,
         policy=FOUR_SWORDS_POLICY,
-        config=LinkedRunnerConfig(max_turns=3, max_model_calls=2),
+        config=LinkedRunnerConfig(max_turns=3, max_model_calls=3),
         team_provider=captain,
         visual_plan_override=lambda _stage, _views: {},
     )
@@ -449,8 +449,8 @@ def test_room_plan_is_reused_until_visual_stagnation_requires_replanning() -> No
 
     result = runner.run()
 
-    assert result.model_calls == 2
-    assert len(captain.requests) == 2
+    assert result.model_calls == 3
+    assert len(captain.requests) == 3
 
 
 def test_npc_autopilot_executes_only_the_captains_human_dialogue_plan() -> None:
@@ -708,7 +708,7 @@ def test_human_portal_transition_resumes_one_shared_model() -> None:
         policy=FOUR_SWORDS_POLICY,
         config=LinkedRunnerConfig(
             max_turns=4,
-            max_model_calls=2,
+                max_model_calls=4,
             continue_after_team_target=True,
         ),
         team_provider=captain,
@@ -726,8 +726,8 @@ def test_human_portal_transition_resumes_one_shared_model() -> None:
     result = runner.run()
 
     assert result.status == "turn_limit"
-    assert result.model_calls == 2
-    assert len(captain.requests) == 2
+    assert result.model_calls == 3
+    assert len(captain.requests) == 3
     assert captain.requests[1].stage == "explore_room"
     assert reset_calls == [True]
     assert result.turns[0].team_stage == "wait_for_human_warp"

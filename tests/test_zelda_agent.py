@@ -527,6 +527,36 @@ def test_new_room_interacts_only_when_p2_is_already_beside_an_npc() -> None:
     assert plan[1][:2] == ("face_right", "interact")
 
 
+def test_repeated_explore_dialogue_page_uses_sword_to_close() -> None:
+    navigator = FourSwordsVisualTargetNavigator()
+
+    def page(index: int) -> RawFrame:
+        rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
+        rgb[92:148, 4:236] = 0
+        left = 18 + index * 20
+        rgb[104:112, left : left + 12] = 255
+        packed = (
+            ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
+            | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
+            | (rgb[:, :, 2].astype(np.uint16) >> 3)
+        )
+        return RawFrame(
+            data=packed.astype("<u2").tobytes(),
+            width=240,
+            height=160,
+            pitch=480,
+            index=index,
+        )
+
+    for index in range(4):
+        plan = navigator("explore_room", (page(index),) * 4)
+        assert plan[1][0] == "advance_text"
+
+    repeated = navigator("explore_room", (page(0),) * 4)
+
+    assert repeated[1][0] == "use_sword"
+
+
 def test_room_collision_guard_detects_a_follower_near_the_scout() -> None:
     rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
     rgb[62:70, 116:124] = (230, 180, 40)
@@ -591,7 +621,7 @@ def test_navigator_keeps_leaving_after_return_grid_is_partially_hidden() -> None
 def test_followers_accept_only_the_grid_occupied_by_the_confirmed_scout() -> None:
     navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
 
-    def frame(with_grid: bool, index: int) -> RawFrame:
+    def frame(with_grid: bool, index: int, *, with_scout: bool = True) -> RawFrame:
         rgb = np.full((160, 240, 3), (130, 180, 110), dtype=np.uint8)
         if with_grid:
             for x, y in ((70, 40), (120, 40), (70, 88), (120, 88)):
@@ -599,8 +629,9 @@ def test_followers_accept_only_the_grid_occupied_by_the_confirmed_scout() -> Non
                 rgb[y - 9 : y + 10, x - 9 : x + 10] = (245, 245, 220)
             rgb[73:104, 105:136] = (173, 219, 255)
             rgb[79:98, 111:130] = (255, 251, 255)
-            rgb[68:74, 116:125] = (245, 190, 35)
-            rgb[75:89, 116:125] = (220, 30, 25)
+            if with_scout:
+                rgb[68:74, 116:125] = (245, 190, 35)
+                rgb[75:89, 116:125] = (220, 30, 25)
         packed = (
             ((rgb[:, :, 0].astype(np.uint16) >> 3) << 11)
             | ((rgb[:, :, 1].astype(np.uint16) >> 2) << 5)
@@ -632,6 +663,16 @@ def test_followers_accept_only_the_grid_occupied_by_the_confirmed_scout() -> Non
     navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
     navigator("reach_warps", (blank,) * 4)
     plans = navigator("reach_warps", (grid, grid, unoccupied_grid, unoccupied_grid))
+
+    assert 2 in navigator.leaving_return_players
+    assert 3 in navigator.leaving_return_players
+    assert plans[2] == ("move_up",)
+    assert plans[3] == ("move_up",)
+
+    wrong_grid = frame(True, 3, with_scout=False)
+    navigator = FourSwordsVisualTargetNavigator(probe_reached=True)
+    navigator("reach_warps", (blank,) * 4)
+    plans = navigator("reach_warps", (grid, grid, wrong_grid, wrong_grid))
 
     assert 2 in navigator.leaving_return_players
     assert 3 in navigator.leaving_return_players

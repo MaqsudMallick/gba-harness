@@ -355,27 +355,10 @@ class VertexTeamDecisionProvider:
                 )
         observation_png = request.image_png
         observation_label = "four-player composite view"
-        if (
-            self.navigation_only
-            and request.player_images
-            and request.stage
-            in {"reach_npc", "advance_dialogue", "probe_target", "explore_room"}
-        ):
-            observation_png = request.player_images[npc_actor]
-            observation_label = f"P{npc_player_number} AI Link private view"
         prompt = (
             f"Goal: {request.goal}\n"
             f"Shared state:\n{request.state}\n\n"
             f"Attached observation: {observation_label}.\n"
-            + (
-                f"In this private view, P{npc_player_number} is the red Link. Use the "
-                "avatar's visible position. Do not treat a screen panel position as an "
-                "avatar position.\n"
-                if self.navigation_only
-                and request.stage == "explore_room"
-                and request.player_images
-                else ""
-            )
             + f"{stage_instructions}\n"
             f"Allowed controller macros:\n{descriptions}\n\n"
             "Return one coordinated plan of one to six actions for every AI player. "
