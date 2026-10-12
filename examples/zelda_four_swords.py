@@ -85,6 +85,11 @@ def parser() -> argparse.ArgumentParser:
         help="move P1 to the free portal pad after all three bots form one group",
     )
     result.add_argument(
+        "--complete-after-room-transition",
+        action="store_true",
+        help="finish after the first verified portal transition",
+    )
+    result.add_argument(
         "--smoke",
         action="store_true",
         help="boot four linked consoles and exit without calling Vertex or neatlogs",
@@ -261,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
                         continue_after_team_target=bool(
                             human_player and target_navigator is not None
                         ),
+                        complete_after_room_transition=args.complete_after_room_transition,
                     ),
                     team_provider=(
                         VertexTeamDecisionProvider(
@@ -513,6 +519,8 @@ def _run_live(
     runner.on_stage_change = lambda message: phase.__setitem__(0, message)
 
     def keep_human_active(_episode: LinkedEpisodeResult) -> None:
+        if runner.config.complete_after_room_transition:
+            return
         if human_actions is None or not human_player:
             return
         phase[0] = f"AGENTS FINISHED — P{human_player} FREE PLAY ACTIVE"
@@ -606,6 +614,8 @@ def _run_live(
 
             record = latest[0]
             complete = not worker.is_alive()
+            if complete and runner.config.complete_after_room_transition:
+                running = False
             header = "RUN FINISHED — press Esc to close" if complete else phase[0]
             lines = [header]
             if record is None:

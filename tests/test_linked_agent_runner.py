@@ -709,6 +709,59 @@ def test_human_portal_transition_resumes_one_shared_model() -> None:
     assert result.turns[-1].team_stage == "explore_room"
 
 
+def test_human_portal_transition_can_complete_one_puzzle() -> None:
+    source = HumanActionSource()
+    source.submit("move_up")
+    captain = FakeTeamProvider(stage="reach_warps")
+    assigned = (
+        PlayerAssignment(
+            0,
+            "human",
+            HumanDecisionProvider(source, timeout_seconds=0),
+            participant_type="human",
+        ),
+        *assignments([[Decision("wait", 1.0, "unused")] for _ in range(3)]),
+    )
+    assigned = tuple(
+        PlayerAssignment(index, item.role, item.provider, item.participant_type)
+        for index, item in enumerate(assigned)
+    )
+    reset_calls: list[bool] = []
+    runner = LinkedAgentRunner(
+        session=LinkedSession(RecordingPort()),
+        frames=cast(
+            FrameLatch,
+            SequenceComposite([0, 0, 0, 255, 0, 255, 255]),
+        ),
+        assignments=assigned,
+        policy=FOUR_SWORDS_POLICY,
+        config=LinkedRunnerConfig(
+            max_turns=4,
+            max_model_calls=2,
+            continue_after_team_target=True,
+            complete_after_room_transition=True,
+        ),
+        team_provider=captain,
+        visual_plan_override=lambda _stage, _views: {
+            1: ("wait",),
+            2: ("wait",),
+            3: ("wait",),
+        },
+        team_target_detector=lambda _views: True,
+        gameplay_detector=lambda frame: frame.data[0] == 255,
+        on_next_room=lambda: reset_calls.append(True),
+    )
+    runner._team_stage = "reach_warps"
+
+    result = runner.run()
+
+    assert result.status == "completed"
+    assert result.model_calls == 1
+    assert len(captain.requests) == 1
+    assert reset_calls == []
+    assert result.turns[-1].team_stage == "wait_for_human_warp"
+
+
 def test_human_portal_wait_repairs_after_three_idle_invalid_frames() -> None:
     source = HumanActionSource()
     source.submit("move_right")

@@ -47,6 +47,7 @@ class LinkedRunnerConfig:
     max_consecutive_errors: int = 3
     autoplay_human_dialogue: bool = False
     continue_after_team_target: bool = False
+    complete_after_room_transition: bool = False
 
     def __post_init__(self) -> None:
         if self.max_turns < 1:
@@ -255,6 +256,17 @@ class LinkedAgentRunner:
                             "A human movement displaced a bot; portal repair resumed"
                         )
                         continue
+                    if self.config.complete_after_room_transition:
+                        self._team_stage = "complete"
+                        status = "completed"
+                        if self.on_stage_change is not None:
+                            self.on_stage_change(
+                                "PUZZLE COMPLETE — all players entered the next room"
+                            )
+                        self.telemetry.log(
+                            "A visible room transition completed the portal puzzle"
+                        )
+                        break
                     self._team_stage = "explore_room"
                     self._cached_team_outcomes = None
                     self._cached_team_stage = ""
